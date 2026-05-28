@@ -1,0 +1,21 @@
+name,manufacturer,country,is_competitor,brand_group_name
+Dafalgan,GSK,"BE,FR",false,GSK_Paracetamol
+Doliprane,Sanofi,"FR",false,Sanofi_Paracetamol
+Perdolan,Perrigo,"BE",true,Perrigo_Paracetamol
+Nurofen,Reckitt,"BE,FR",true,Reckitt_Ibuprofen
+Advil,Pfizer,"FR",true,Pfizer_Ibuprofen
+Voltaren,Haleon,"BE,FR",true,Haleon_Diclofenac
+Imodium,Janssen,"BE,FR",true,Janssen_Digestive
+Enterogermina,Sanofi,"BE,FR",true,Sanofi_Digestive
+Lacteol,Rameda,"FR",true,Rameda_Digestive
+Clarityne,Bayer,"BE,FR",true,Bayer_Allergy
+Zyrtec,UCB,"BE,FR",true,UCB_Allergy
+Telfast,Sanofi,"FR",true,Sanofi_Allergy
+Vitamine C Bayer,Bayer,"BE,FR",true,Bayer_Vitamins
+Supradyn,Bayer,"BE,FR",true,Bayer_Vitamins
+Magnesium Diasporal,Protina,"BE,FR",true,Protina_Magnesium
+Omega-3 Forte,Arkopharma,"FR",true,Arkopharma_Omega
+Bepanthen,Bayer,"BE,FR",true,Bayer_Dermatology
+Biafine,Johnson,"FR",true,JJ_Dermatology
+Eucerin,Beiersdorf,"BE,FR",true,Beiersdorf_Dermatology
+Dexpanthenol,Generic,"BE,FR",true,Generic_Dermatology

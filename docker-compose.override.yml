@@ -1,0 +1,29 @@
+version: "3.9"
+
+services:
+  api:
+    environment:
+      DATABASE_URL: postgresql+asyncpg://pharmawatch:password@db:5432/pharmawatch
+      DATABASE_SYNC_URL: postgresql://pharmawatch:password@db:5432/pharmawatch
+      REDIS_URL: redis://redis:6379/0
+      QDRANT_URL: http://qdrant:6333
+      OLLAMA_BASE_URL: http://ollama:11434
+  worker:
+    environment:
+      DATABASE_URL: postgresql+asyncpg://pharmawatch:password@db:5432/pharmawatch
+      DATABASE_SYNC_URL: postgresql://pharmawatch:password@db:5432/pharmawatch
+      REDIS_URL: redis://redis:6379/0
+      # The `celery` console-script puts /usr/local/bin on sys.path[0], not /app,
+      # so deferred imports inside tasks (e.g. `from intelligence.anomaly ...`)
+      # fail with ModuleNotFoundError. Pin PYTHONPATH so /app is always reachable.
+      PYTHONPATH: /app
+  beat:
+    environment:
+      DATABASE_URL: postgresql+asyncpg://pharmawatch:password@db:5432/pharmawatch
+      DATABASE_SYNC_URL: postgresql://pharmawatch:password@db:5432/pharmawatch
+      REDIS_URL: redis://redis:6379/0
+      PYTHONPATH: /app
+  migrate:
+    environment:
+      DATABASE_URL: postgresql+asyncpg://pharmawatch:password@db:5432/pharmawatch
+      DATABASE_SYNC_URL: postgresql://pharmawatch:password@db:5432/pharmawatch

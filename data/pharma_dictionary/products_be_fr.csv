@@ -1,0 +1,23 @@
+name,brand_name,active_ingredient,category_slug,cnk,ean,is_otc,is_prescription,country
+Dafalgan 1g,Dafalgan,paracetamol,pain_relief,0123456,5400000001001,true,false,"BE,FR"
+Dafalgan 500mg,Dafalgan,paracetamol,pain_relief,0123457,5400000001002,true,false,"BE,FR"
+Doliprane 1000mg,Doliprane,paracetamol,pain_relief,,3400000001001,true,false,FR
+Doliprane 500mg,Doliprane,paracetamol,pain_relief,,3400000001002,true,false,FR
+Perdolan Compositum,Perdolan,paracetamol+codeine,pain_relief,0234567,5400000002001,false,true,BE
+Nurofen 400mg,Nurofen,ibuprofen,pain_relief,0345678,5400000003001,true,false,"BE,FR"
+Nurofen 200mg,Nurofen,ibuprofen,pain_relief,0345679,5400000003002,true,false,"BE,FR"
+Advil 400mg,Advil,ibuprofen,pain_relief,,3400000003001,true,false,FR
+Voltaren Emulgel,Voltaren,diclofenac,pain_relief,0456789,5400000004001,true,false,"BE,FR"
+Imodium Capsule,Imodium,loperamide,digestive,0567890,5400000005001,true,false,"BE,FR"
+Enterogermina 2B,Enterogermina,bacillus clausii,digestive,0678901,5400000006001,true,false,"BE,FR"
+Lacteol 170mg,Lacteol,lactobacillus acidophilus,digestive,,3400000007001,true,false,FR
+Clarityne 10mg,Clarityne,loratadine,allergy,0789012,5400000008001,true,false,"BE,FR"
+Zyrtec 10mg,Zyrtec,cetirizine,allergy,0890123,5400000009001,true,false,"BE,FR"
+Telfast 120mg,Telfast,fexofenadine,allergy,,3400000010001,true,false,FR
+Vitamine C Bayer 1000mg,Vitamine C Bayer,ascorbic acid,vitamins_supplements,0901234,5400000011001,true,false,"BE,FR"
+Supradyn Energie,Supradyn,multivitamin,vitamins_supplements,1012345,5400000012001,true,false,"BE,FR"
+Magnesium Diasporal 300,Magnesium Diasporal,magnesium citrate,vitamins_supplements,1123456,5400000013001,true,false,"BE,FR"
+Omega-3 Forte 1000mg,Omega-3 Forte,omega-3 fatty acids,vitamins_supplements,,3400000014001,true,false,FR
+Bepanthen Creme,Bepanthen,dexpanthenol,dermatology_otc,1234567,5400000015001,true,false,"BE,FR"
+Biafine 93g,Biafine,trolamine,dermatology_otc,,3400000016001,true,false,FR
+Eucerin Intensive,Eucerin,urea,dermatology_otc,1345678,5400000017001,true,false,"BE,FR"
