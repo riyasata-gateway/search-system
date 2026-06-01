@@ -10,9 +10,129 @@ from api.dependencies import get_current_user, require_lab
 from core.database import get_db
 from models.mention import Mention, MentionClassification, Sentiment, Topic, RiskType
 from models.trend import TrendPeriod, TrendSignal
-from models.user import User
+from models.user import User, UserRole
 
 router = APIRouter()
+
+
+async def _owned_brand_ids(db: AsyncSession, current_user: User):
+    """The set of brand ids a user may view, or None meaning 'all brands'.
+
+    Ownership is scoped by **manufacturer**: a lab user linked to a brand_group
+    owns every brand made by that group's manufacturer (a real portfolio, e.g.
+    a Sanofi user owns Doliprane + Enterogermina + Telfast). Admins and unlinked
+    users are unrestricted (None).
+    """
+    if current_user.role == UserRole.admin:
+        return None
+    group_id = getattr(current_user, "brand_group_id", None)
+    if not group_id:
+        return None
+
+    from models.brand import Brand
+
+    mfrs = [
+        m for m in (
+            await db.execute(
+                select(Brand.manufacturer).where(Brand.brand_group_id == group_id).distinct()
+            )
+        ).scalars().all()
+        if m
+    ]
+    if not mfrs:
+        return None
+    ids = (
+        await db.execute(select(Brand.id).where(Brand.manufacturer.in_(mfrs)))
+    ).scalars().all()
+    return set(ids)
+
+
+async def _resolve_brand_id(
+    db: AsyncSession, brand_id: Optional[int], current_user: User
+) -> int:
+    """Resolve which brand a lab view scopes to, enforcing ownership.
+
+    A non-admin may only view brands in their owned portfolio; an out-of-scope
+    `?brand_id` is ignored and we fall back to an owned default. When nothing is
+    explicitly chosen we pick the in-scope brand with the most mention links, so
+    the dashboard always lands on a brand that actually has data.
+    """
+    from models.mention import MentionEntity, EntityType
+
+    owned = await _owned_brand_ids(db, current_user)
+
+    if brand_id and (owned is None or brand_id in owned):
+        return brand_id
+
+    # Default: the most-mentioned brand within the allowed pool.
+    most_q = (
+        select(MentionEntity.entity_id, func.count().label("cnt"))
+        .where(MentionEntity.entity_type == EntityType.brand)
+        .group_by(MentionEntity.entity_id)
+        .order_by(func.count().desc())
+    )
+    if owned is not None:
+        most_q = most_q.where(MentionEntity.entity_id.in_(owned))
+    row = (await db.execute(most_q.limit(1))).first()
+    if row:
+        return row[0]
+
+    # No mention-linked brand in scope — fall back to any owned brand so the
+    # page still renders (honestly empty) rather than 400-ing.
+    if owned:
+        return sorted(owned)[0]
+
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="brand_id required — no brand-linked mentions in the corpus yet",
+    )
+
+
+class MyBrandOut(BaseModel):
+    id: int
+    name: str
+    manufacturer: Optional[str]
+    is_competitor: bool
+    has_data: bool
+
+
+@router.get("/my-brands", response_model=List[MyBrandOut])
+async def my_brands(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_lab),
+):
+    """Brands this user may switch between: their owned portfolio (by
+    manufacturer) for marketing/brand_manager, or all brands for admin.
+    `has_data` flags which brands actually have linked mentions today.
+    """
+    from models.brand import Brand
+    from models.mention import MentionEntity, EntityType
+
+    owned = await _owned_brand_ids(db, current_user)
+    q = select(Brand)
+    if owned is not None:
+        q = q.where(Brand.id.in_(owned))
+    brands = (await db.execute(q.order_by(Brand.name))).scalars().all()
+
+    data_ids = set(
+        (
+            await db.execute(
+                select(MentionEntity.entity_id)
+                .where(MentionEntity.entity_type == EntityType.brand)
+                .distinct()
+            )
+        ).scalars().all()
+    )
+    return [
+        MyBrandOut(
+            id=b.id,
+            name=b.name,
+            manufacturer=b.manufacturer,
+            is_competitor=bool(b.is_competitor),
+            has_data=b.id in data_ids,
+        )
+        for b in brands
+    ]
 
 
 class BrandOverviewOut(BaseModel):
@@ -73,12 +193,7 @@ async def lab_dashboard(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_lab),
 ):
-    resolved_brand_id = brand_id or getattr(current_user, "brand_id", None)
-    if resolved_brand_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="brand_id required — pass ?brand_id=<id> or link user to a brand",
-        )
+    resolved_brand_id = await _resolve_brand_id(db, brand_id, current_user)
 
     from models.mention import Mention, MentionEntity, EntityType
     from models.adverse_event import AdverseEventCandidate, AdverseEventReviewStatus
@@ -158,9 +273,7 @@ async def brand_overview(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_lab),
 ):
-    resolved_brand_id = brand_id or getattr(current_user, "brand_id", None)
-    if not resolved_brand_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="brand_id required")
+    resolved_brand_id = await _resolve_brand_id(db, brand_id, current_user)
 
     q = select(TrendSignal).where(
         TrendSignal.entity_type == "brand",
@@ -267,9 +380,7 @@ async def sentiment_breakdown(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_lab),
 ):
-    resolved_brand_id = brand_id or getattr(current_user, "brand_id", None)
-    if not resolved_brand_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="brand_id required")
+    resolved_brand_id = await _resolve_brand_id(db, brand_id, current_user)
 
     from models.mention import MentionEntity, EntityType
     entity_q = await db.execute(
@@ -303,9 +414,7 @@ async def topic_clusters(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_lab),
 ):
-    resolved_brand_id = brand_id or getattr(current_user, "brand_id", None)
-    if not resolved_brand_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="brand_id required")
+    resolved_brand_id = await _resolve_brand_id(db, brand_id, current_user)
 
     from models.mention import MentionEntity, EntityType
     entity_q = await db.execute(
@@ -338,9 +447,7 @@ async def weekly_summary(
     current_user: User = Depends(require_lab),
 ):
     """LLM-generated executive summary — 'What changed this week?'"""
-    resolved_brand_id = brand_id or getattr(current_user, "brand_id", None)
-    if not resolved_brand_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="brand_id required")
+    resolved_brand_id = await _resolve_brand_id(db, brand_id, current_user)
 
     from intelligence.llm_summariser import generate_weekly_summary
     from datetime import date, timedelta

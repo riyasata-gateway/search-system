@@ -15,6 +15,8 @@ from models.market_data import (
     MarketData, MarketDataImport, MarketDataPeriod, MarketDataSource,
     PrescriptionEvent,
 )
+from models.search_audit import SearchQuery, SearchResult, AIAnswer, SearchMode
+from models.search_metrics import SearchMetric
 
 __all__ = [
     "Base",
@@ -49,4 +51,9 @@ __all__ = [
     "MarketDataPeriod",
     "MarketDataSource",
     "PrescriptionEvent",
+    "SearchMetric",
+    "SearchQuery",
+    "SearchResult",
+    "AIAnswer",
+    "SearchMode",
 ]

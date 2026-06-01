@@ -26,7 +26,8 @@ DEMO_PASSWORD = "demopass123"
 USERS = [
     ("admin@pharmawatch.eu", UserRole.admin),
     ("pharmacist@pharmawatch.eu", UserRole.pharmacist),
-    ("lab@pharmawatch.eu", UserRole.lab_user),
+    ("marketing@pharmawatch.eu", UserRole.marketing),
+    ("brand_manager@pharmawatch.eu", UserRole.brand_manager),
 ]
 
 

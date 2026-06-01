@@ -96,6 +96,54 @@ def _persist_mentions(raw_mentions: list, source_type: str) -> int:
     return saved
 
 
+@shared_task(name="ingestion.tasks.ingest_live_results", bind=True, max_retries=2)
+def ingest_live_results(self, results: Optional[list] = None):
+    """Governed async ingest of *live-search* results into the mentions corpus.
+
+    Live Search is no-write on the request path; this task lets a search also
+    enrich the canonical corpus by routing its results through the SAME persist
+    pipeline the connectors use (`_persist_mentions` → dedup + retention + bus).
+    The periodic `process_pending_mentions` task then classifies / entity-resolves
+    / risk-flags them exactly like connector data. DPIA-gated like all ingest.
+    """
+    if not settings.DPIA_PROCESSING_ENABLED:
+        logger.warning("ingestion_blocked", reason="DPIA_PROCESSING_ENABLED=false")
+        return {"status": "blocked", "reason": "DPIA not enabled"}
+
+    from collections import defaultdict
+
+    by_source: dict = defaultdict(list)
+    for r in (results or []):
+        text = (r.get("raw_text") or "").strip()
+        if not text:
+            continue
+        published = r.get("published_at")
+        if isinstance(published, str):
+            try:
+                published = datetime.fromisoformat(published.replace("Z", "+00:00"))
+            except ValueError:
+                published = None
+        rm = RawMention(
+            source_type=r.get("source_type") or "live_search",
+            source_url=r.get("source_url"),
+            country=r.get("country"),
+            language=r.get("language"),
+            published_at=published,
+            raw_text=text,
+            query_used=r.get("query_used") or "",
+            author_id=None,
+            engagement_count=r.get("engagement_count"),
+            metadata=r.get("metadata") or {},
+        )
+        by_source[rm.source_type].append(rm)
+
+    total = 0
+    for source_type, rms in by_source.items():
+        total += _persist_mentions(rms, source_type)
+    logger.info("ingest_live_results_done", saved=total, sources=list(by_source.keys()))
+    return {"saved": total}
+
+
 @shared_task(name="ingestion.tasks.collect_google_trends", bind=True, max_retries=3)
 def collect_google_trends(self, search_topic_id: Optional[int] = None):
     if not settings.DPIA_PROCESSING_ENABLED:

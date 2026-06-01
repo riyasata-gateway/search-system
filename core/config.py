@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     APP_SECRET_KEY: str
     APP_ALLOWED_ORIGINS: str = "http://localhost:3000"
 
+    LOG_LEVEL: str = "INFO"
+
     @property
     def allowed_origins(self) -> List[str]:
         return [o.strip() for o in self.APP_ALLOWED_ORIGINS.split(",")]
@@ -25,11 +27,6 @@ class Settings(BaseSettings):
     QDRANT_URL: str = "http://localhost:6333"
     QDRANT_COLLECTION: str = "pharmawatch_mentions"
 
-    # ── Object storage ───────────────────────────────────────────────────────
-    AZURE_STORAGE_CONNECTION_STRING: Optional[str] = None
-    AZURE_BLOB_CONTAINER_RAW: str = "raw-mentions"
-    AZURE_BLOB_CONTAINER_EXPORTS: str = "exports"
-
     # ── LLM ──────────────────────────────────────────────────────────────────
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "mistral:7b-instruct"
@@ -37,6 +34,7 @@ class Settings(BaseSettings):
     # ── OpenAI ───────────────────────────────────────────────────────────────
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_MODEL: str = "gpt-5.4-mini"
+    AI_WEB_SEARCH: bool = True
 
     # ── Reddit ───────────────────────────────────────────────────────────────
     REDDIT_CLIENT_ID: Optional[str] = None

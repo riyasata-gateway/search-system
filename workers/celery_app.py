@@ -41,6 +41,10 @@ celery_app.conf.beat_schedule = {
         "task": "ingestion.tasks.collect_rss_news",
         "schedule": 14400,
     },
+    "collect-youtube-6h": {
+        "task": "ingestion.tasks.collect_youtube",
+        "schedule": 21600,
+    },
     "process-pending-mentions-15min": {
         "task": "workers.processing_worker.process_pending_mentions",
         "schedule": 900,

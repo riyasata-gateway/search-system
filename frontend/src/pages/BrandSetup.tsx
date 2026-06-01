@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "../api/client";
-import { Plus, Trash2, Save } from "lucide-react";
+import { Plus, Trash2 } from "lucide-react";
 
 const COUNTRIES = ["BE", "FR", "NL", "DE"];
 const LANGUAGES = ["fr", "nl", "en", "de"];

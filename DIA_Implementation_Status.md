@@ -1,7 +1,19 @@
 # DIA Framework — PharmaWatch Implementation Status
 
-_Date: 2026-05-21 (Phase 4 partial — TDAH branding + DPIA finalised)_
+_Date: 2026-05-28 (Belgium+France localisation, EU pharmacovigilance, search audit)_
 _Reference docs: `DIA_Pharma_Framework.docx`, `TDAH_DIA_Framework.docx`_
+
+## Changelog 2026-05-28
+- ✅ **Vector semantic search endpoint** wired (`/api/v1/search/semantic`)
+- ✅ **Search audit tables** (`search_queries`, `search_results`, `ai_answers`) + Alembic `c3d4e5f6a7b8`; every `/live`, `/ai`, `/semantic` call persisted via BackgroundTasks
+- ✅ **Azure Blob references removed** (Postgres + Qdrant only)
+- ✅ **Belgium+France localisation** — locale map narrowed to BE+FR; Wikipedia/News grounding focused on `["BE","FR"]` × `["fr","nl","de","en"]`
+- ✅ **YouTube activated** — `collect-youtube-6h` Celery beat + added to live-search defaults
+- ✅ **EudraVigilanceConnector** replaces openFDA as default EU pharmacovigilance source (openFDA still available opt-in via `?sources=openfda`)
+- ✅ **BelgiumHealthDataConnector** scaffold — BCFI/CBIP + FAGG shortages + data.gov.be (selector tuning needed)
+- ✅ **BelgiumHCPConnector** scaffold — FAMHP pharmacy list + INAMI/RIZIV lookup + Doctena BE (INAMI endpoint URL needs re-verification)
+- ✅ **DoctissimoConnector** — ToS-respecting (no /search/ hammering, HMAC author pseudonymisation, 6s throttle), DPIA-gated
+- ✅ **DrugsComConnector** — permanent disabled stub (ToS prohibits automated access; documented in code)
 
 ## Framework recap
 
@@ -27,7 +39,14 @@ The frameworks specify three layers with concrete components — each component 
 | **Wikipedia (multilingual reference)** | ✅ | `ingestion/connectors/wikipedia.py` |
 | **PubMed (biomedical literature)** | ✅ | `ingestion/connectors/pubmed.py` |
 | **ClinicalTrials.gov (trial registry)** | ✅ | `ingestion/connectors/clinical_trials.py` |
-| **openFDA (drug labels + FAERS adverse events)** | ✅ | `ingestion/connectors/openfda.py` |
+| **openFDA (drug labels + FAERS adverse events)** | ✅ (opt-in fallback) | `ingestion/connectors/openfda.py` |
+| **EudraVigilance EU-direct pull** | ✅ | `ingestion/connectors/eudravigilance.py` — adrreports.eu, EEA-wide |
+| **Belgium health-data multi-source** | ⚠️ Scaffold | `ingestion/connectors/belgium_health_data.py` — BCFI/CBIP, FAGG shortages, data.gov.be |
+| **Belgium HCP discovery** | ⚠️ Scaffold | `ingestion/connectors/belgium_hcp.py` — FAMHP, INAMI, Doctena |
+| **Doctissimo patient forums (FR/BE)** | ✅ (DPIA-gated) | `ingestion/connectors/doctissimo.py` |
+| **Drugs.com** | ❌ Disabled (ToS) | `ingestion/connectors/drugs_com.py` — permanent stub |
+| **Search audit log** | ✅ | `core/search_audit.py`, tables `search_queries` / `search_results` / `ai_answers` |
+| **Vector semantic search** | ✅ | `/api/v1/search/semantic` — Qdrant read path |
 | **App Store reviews (ToS-safe patient reviews)** | ✅ | `ingestion/connectors/app_store.py` |
 | **Trustpilot reviews (consumer reviews via API)** | ✅ | `ingestion/connectors/trustpilot.py` (requires `TRUSTPILOT_API_KEY`) |
 | **Real-time streaming ingestion** ("aucun signal ne se perd") | ✅ | `core/event_bus.py`, `workers/streaming_worker.py`, beat schedule 60s pulse |

@@ -26,6 +26,8 @@ from api.routers import (
     gdpr,
     live_search,
     ai_search,
+    semantic_search,
+    search_analytics,
     intelligence,
     stream,
     market_data,
@@ -79,6 +81,8 @@ app.include_router(admin.router, prefix="/api/v1/admin", tags=["admin"])
 app.include_router(gdpr.router, prefix="/api/v1/gdpr", tags=["gdpr"])
 app.include_router(live_search.router, prefix="/api/v1/search", tags=["search"])
 app.include_router(ai_search.router, prefix="/api/v1/search", tags=["search"])
+app.include_router(semantic_search.router, prefix="/api/v1/search", tags=["search"])
+app.include_router(search_analytics.router, prefix="/api/v1/analytics", tags=["analytics"])
 app.include_router(intelligence.router, prefix="/api/v1/intelligence", tags=["intelligence"])
 app.include_router(stream.router, prefix="/api/v1/stream", tags=["stream"])
 app.include_router(market_data.router, prefix="/api/v1/market-data", tags=["market-data"])

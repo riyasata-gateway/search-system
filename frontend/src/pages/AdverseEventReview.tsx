@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "../api/client";
-import { Shield, ChevronDown } from "lucide-react";
+import { Shield } from "lucide-react";
 
 const STATUS_OPTIONS = ["reviewed", "escalated", "dismissed", "reported"];
 

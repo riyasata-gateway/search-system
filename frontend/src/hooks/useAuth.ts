@@ -1,8 +1,10 @@
 import { useState, useCallback } from "react";
 import { apiClient } from "../api/client";
 
+export type Role = "pharmacist" | "marketing" | "brand_manager" | "admin";
+
 export interface AuthUser {
-  role: "pharmacist" | "lab_user" | "admin";
+  role: Role;
 }
 
 export function useAuth() {

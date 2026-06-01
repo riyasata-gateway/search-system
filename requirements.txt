@@ -22,14 +22,8 @@ redis==5.0.4
 celery==5.4.0
 celery[redis]==5.4.0
 
-# ── Object storage (Azure Blob) ───────────────────────────────────────────────
-azure-storage-blob==12.19.1
-
 # ── Ingestion connectors ─────────────────────────────────────────────────────
 pytrends==4.9.2
-# pytrends 4.9.2 calls urllib3.util.retry.Retry(method_whitelist=...), which
-# urllib3 v2 removed (it was renamed to allowed_methods). Pin urllib3<2 until
-# pytrends ships a release that targets urllib3 v2.
 urllib3<2.0
 praw==7.7.1
 feedparser==6.0.11
@@ -38,16 +32,16 @@ httpx==0.27.0
 beautifulsoup4==4.12.3
 pandas==2.2.2
 openpyxl==3.1.2
-google-api-python-client==2.130.0   # YouTube Data API v3
+google-api-python-client==2.130.0
+playwright==1.45.0
 
 # ── NLP / ML ─────────────────────────────────────────────────────────────────
 spacy==3.8.4
 lingua-language-detector==2.0.2
-transformers==4.41.1
 sentence-transformers==3.0.1
-torch==2.3.0
+transformers==4.41.1
 tokenizers==0.19.1
-accelerate==0.30.0
+torch==2.3.0
 
 # ── Vector DB ────────────────────────────────────────────────────────────────
 qdrant-client==1.9.1
@@ -55,7 +49,7 @@ qdrant-client==1.9.1
 # ── LLM (Ollama / Mistral self-hosted) ───────────────────────────────────────
 ollama==0.2.0
 
-# ── OpenAI (GPT-4o-mini AI search) ───────────────────────────────────────────
+# ── OpenAI (AI search + NLP classifier) ──────────────────────────────────────
 openai>=1.35.0
 
 # ── Utilities ────────────────────────────────────────────────────────────────

@@ -1,25 +1,69 @@
 """
-AI-powered search — fetches live context then synthesises an answer via OpenAI.
-Endpoints:
-  GET  /api/v1/search/ai?q=<query>            — synthesises from fresh news fetch
-  POST /api/v1/search/ai                      — accepts pre-fetched context (used
-                                                by the "Ask AI about these results"
-                                                bridge from Live Search)
+AI-powered search — an INDEPENDENT research mode.
+
+  GET /api/v1/search/ai?q=<query>   — the model researches the query itself
+                                       (its own up-to-date knowledge + live web
+                                       search when available) and returns a
+                                       role-tailored synthesis with its own cited
+                                       sources.
+
+AI mode is deliberately standalone: it is NOT fed Live Search results and never
+shares context with the live connectors. Live Search and AI Mode are two distinct
+answers to the same query — one is a real-time connector fan-out, the other is an
+independent LLM analysis. (The old POST "Ask AI about these results" bridge was
+removed so the two modes stay fully independent.)
 """
 import asyncio
 import json
 import time
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from api.dependencies import get_current_user
 from core.config import settings
+from core.logging import get_logger
+from core.role_lens import lens_prompt, resolve_role, role_label
+from core.search_metrics import SearchIntelligence
+from intelligence.search_intelligence import build_search_intelligence, flatten_for_db
+from core.search_audit import log_search_query
+from models.search_audit import SearchMode
 from models.user import User
 from processing.query_expansion import expand_query
 
 router = APIRouter()
+logger = get_logger(__name__)
+
+_WEB_SEARCH_SUPPORTED = True
+
+
+async def _call_model(client, messages, allow_web_search: bool):
+    """Call the chat model, asking it to web-search when allowed & supported.
+
+    If the model/deployment doesn't accept `web_search_options` (or it clashes
+    with JSON mode), we remember that and fall back to the plain JSON call — so
+    AI mode degrades to the model's own knowledge rather than erroring."""
+    global _WEB_SEARCH_SUPPORTED
+    base = dict(
+        model=settings.OPENAI_MODEL,
+        messages=messages,
+        max_completion_tokens=900,
+        response_format={"type": "json_object"},
+    )
+    if allow_web_search and settings.AI_WEB_SEARCH and _WEB_SEARCH_SUPPORTED:
+        try:
+            return await asyncio.wait_for(
+                client.chat.completions.create(**base, web_search_options={}),
+                timeout=35.0,
+            )
+        except Exception as exc:
+            _WEB_SEARCH_SUPPORTED = False
+            logger.warning("ai_web_search_unsupported", error=str(exc))
+    return await asyncio.wait_for(
+        client.chat.completions.create(**base),
+        timeout=25.0,
+    )
 
 # `sentiment_summary` stays in English so the frontend badge styling keeps working;
 # narrative fields (answer, key_points, disclaimer) are rendered in the user's locale.
@@ -31,14 +75,38 @@ _LANG_NAMES = {
 }
 
 
-def _build_system_prompt(lang: str) -> str:
+def _build_system_prompt(lang: str, role: str = "admin") -> str:
     lang_name = _LANG_NAMES.get(lang, "English")
-    return f"""You are TDAH AI (Trend Data Aggregator Hyperintelligent — by PharmaWatch), an expert pharmaceutical intelligence assistant for the EU market (Belgium and France, Phase 1). You help pharmacists and pharmaceutical lab users understand brand sentiment, side effect signals, pricing trends, and drug availability based on real-world data.
 
-When answering queries about drugs or pharmaceutical brands:
+    # AI mode is independent: no sources are pre-supplied, the model does its own
+    # research. (Live Search is the connector-grounded mode; we keep them distinct.)
+    grounding = (
+        "RESEARCH & GROUNDING — VERY IMPORTANT:\n"
+        "No sources are pre-supplied. Research this yourself using your own "
+        "up-to-date knowledge of the Belgium (primary) and France (secondary) "
+        "market for the queried product/brand — and live web search if you have "
+        "that capability. Prefer recent, local, authoritative signal.\n"
+        "- Populate the `sources` array with the concrete references you relied "
+        "on (title + URL). Cite them inline in `answer`/`key_points` as [1],[2]… "
+        "matching the order of the `sources` array.\n"
+        "- Be explicit about uncertainty; for safety- or availability-critical "
+        "claims, recommend verifying against official BE/FR sources (FAGG/AFMPS, "
+        "ANSM, EudraVigilance). Never fabricate a URL — omit a source you can't name."
+    )
+
+    return f"""You are TDAH AI (Trend Data Aggregator Hyperintelligent — by PharmaWatch), an expert pharmaceutical intelligence assistant for the EU market (Belgium primary, France secondary). You turn a query about a drug/brand into intelligence about what is happening in that country regarding that product.
+
+{lens_prompt(role)}
+
+MAKE IT ACTIONABLE FOR THIS ROLE'S WORK:
+- Frame the answer so it directly helps the reader do their job (per the audience lens above).
+- At least one key point must be a concrete next step / recommended action this role can take in their work area.
+- Lead with what matters most to this role; treat the rest as supporting context.
+
+When answering:
 - Provide a clear, factual summary (2-4 sentences)
-- Highlight any notable sentiment patterns, risk signals, or trends
-- List 3-5 concise key points
+- Highlight notable sentiment patterns, risk signals, or trends
+- List 3-5 concise key points (include the action point above)
 - State the overall sentiment (Positive / Mixed / Negative / Neutral)
 - Always note that this is informational only and not medical advice
 - Keep language professional and EU-pharma appropriate
@@ -47,19 +115,15 @@ LANGUAGE — VERY IMPORTANT:
 - Write the `answer`, every entry in `key_points`, and the `disclaimer` in {lang_name}.
 - The `sentiment_summary` field MUST stay in English: exactly one of "Positive", "Mixed", "Negative", "Neutral".
 
-GROUNDING — VERY IMPORTANT:
-The user message contains a numbered list of source snippets like "[1] ...", "[2] ...".
-- Every factual claim in `answer` and `key_points` that comes from a source MUST cite it inline using bracket markers, e.g. "Patients report mild nausea [2][5]."
-- Use ONLY the numbers that appear in the provided sources list. Never invent citations.
-- If a claim is general pharmacological knowledge and not from the sources, leave it uncited.
-- If no sources are provided, omit citations entirely.
+{grounding}
 
 Respond ONLY with valid JSON in this exact structure:
 {{
   "answer": "<main summary paragraph with [n] citations, in {lang_name}>",
   "key_points": ["<point with [n] citations, in {lang_name}>", "<point>", "<point>"],
   "sentiment_summary": "Positive|Mixed|Negative|Neutral",
-  "disclaimer": "<one-sentence medical/regulatory disclaimer, in {lang_name}>"
+  "disclaimer": "<one-sentence medical/regulatory disclaimer, in {lang_name}>",
+  "sources": [{{"title": "<short source title>", "url": "<https://...>"}}]
 }}"""
 
 
@@ -82,249 +146,22 @@ class AISearchResponse(BaseModel):
     expanded_terms: List[str]
     model: str
     elapsed_ms: int
-
-
-class AISearchFromResultsRequest(BaseModel):
-    """Bridge from Live Search → AI Mode. The frontend forwards already-fetched
-    live results so we don't refetch news."""
-    q: str
-    sources: List[AISearchSource]
-    lang: Optional[str] = "en"
-
-
-def _simple_sentiment(text: str) -> str:
-    tl = text.lower()
-    neg_words = ["side effect", "adverse", "pain", "dangerous", "overdose", "rash",
-                 "allergy", "worse", "terrible", "effet secondaire", "bijwerking"]
-    pos_words = ["great", "excellent", "effective", "recommend", "relief", "better",
-                 "good", "safe", "efficace", "excellent", "recommande"]
-    neg_hits = sum(1 for w in neg_words if w in tl)
-    pos_hits = sum(1 for w in pos_words if w in tl)
-    if neg_hits > pos_hits:
-        return "negative"
-    if pos_hits > neg_hits:
-        return "positive"
-    return "neutral"
-
-
-def _fetch_one_news_dict(query: str, lang: str, geo: str, ceid: str, per_query: int) -> List[dict]:
-    """Single Google News RSS fetch returning dicts (the AI-side context shape)."""
-    import feedparser
-    from urllib.parse import quote_plus
-    from email.utils import parsedate_to_datetime
-    from bs4 import BeautifulSoup
-
-    url = (
-        f"https://news.google.com/rss/search"
-        f"?q={quote_plus(query)}&hl={lang}&gl={geo}&ceid={ceid}"
-    )
-    out: List[dict] = []
-    try:
-        feed = feedparser.parse(url)
-        for entry in feed.entries[:per_query]:
-            link = getattr(entry, "link", None) or getattr(entry, "id", None)
-            if not link:
-                continue
-            title = getattr(entry, "title", "") or ""
-            summary = getattr(entry, "summary", "") or ""
-            clean = BeautifulSoup(summary, "html.parser").get_text(" ", strip=True)
-            text = f"{title}. {clean}".strip() if clean else title.strip()
-            if len(text) < 20:
-                continue
-            published_at = None
-            if hasattr(entry, "published"):
-                try:
-                    published_at = parsedate_to_datetime(entry.published).isoformat()
-                except Exception:
-                    pass
-            out.append({
-                "source_type": "news",
-                "source_url": link,
-                "country": geo,
-                "language": lang,
-                "text": text[:400],
-                "published_at": published_at,
-                "sentiment": _simple_sentiment(text),
-            })
-    except Exception:
-        return []
-    return out
-
-
-async def _fetch_news_context(queries: List[str], max_results: int = 8) -> List[dict]:
-    """Quick Google News RSS fetch to provide grounding context for the LLM.
-
-    Parallelised across (query × locale) combos so cross-lingual expansion doesn't
-    blow past the 10s timeout on cold start.
-    """
-    import functools
-    from concurrent.futures import ThreadPoolExecutor
-
-    locales = [("en", "GB", "GB:en"), ("fr", "FR", "FR:fr")]
-    per_query = max(2, max_results // max(1, len(queries)))
-
-    def _sync_fetch():
-        tasks = [(q, lang, geo, ceid) for q in queries for (lang, geo, ceid) in locales]
-        if not tasks:
-            return []
-        results: List[dict] = []
-        seen_urls: set = set()
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            futures = [
-                pool.submit(_fetch_one_news_dict, q, lang, geo, ceid, per_query)
-                for (q, lang, geo, ceid) in tasks
-            ]
-            for fut in futures:
-                try:
-                    for d in fut.result(timeout=8) or []:
-                        u = d.get("source_url")
-                        if not u or u in seen_urls:
-                            continue
-                        seen_urls.add(u)
-                        results.append(d)
-                        if len(results) >= max_results:
-                            break
-                except Exception:
-                    continue
-                if len(results) >= max_results:
-                    break
-        return results[:max_results]
-
-    try:
-        loop = asyncio.get_running_loop()
-        fn = functools.partial(_sync_fetch)
-        return await asyncio.wait_for(loop.run_in_executor(None, fn), timeout=14.0)
-    except Exception:
-        return []
-
-
-def _raw_mention_to_dict(rm) -> dict:
-    """Adapter: ingestion RawMention → AI grounding dict shape."""
-    return {
-        "source_type": rm.source_type,
-        "source_url": rm.source_url,
-        "country": rm.country,
-        "language": rm.language,
-        # Reference sources (Wikipedia, PubMed) are factual, not opinion — flag neutral.
-        "sentiment": "neutral",
-        "text": (rm.raw_text or "")[:400],
-        "published_at": rm.published_at.isoformat() if rm.published_at else None,
-    }
-
-
-async def _fetch_wikipedia_grounding(queries: List[str]) -> List[dict]:
-    try:
-        from ingestion.connectors.wikipedia import WikipediaConnector
-        rms = await asyncio.wait_for(
-            WikipediaConnector().collect(
-                queries, ["GB", "FR", "NL", "DE", "BE"], ["en", "fr", "nl", "de"]
-            ),
-            timeout=9.0,
-        )
-        return [_raw_mention_to_dict(rm) for rm in rms]
-    except Exception:
-        return []
-
-
-async def _fetch_pubmed_grounding(queries: List[str]) -> List[dict]:
-    try:
-        from ingestion.connectors.pubmed import PubMedConnector
-        rms = await asyncio.wait_for(
-            PubMedConnector().collect(queries, ["GB"], ["en"]),
-            timeout=10.0,
-        )
-        return [_raw_mention_to_dict(rm) for rm in rms]
-    except Exception:
-        return []
-
-
-async def _fetch_clinical_trials_grounding(queries: List[str]) -> List[dict]:
-    try:
-        from ingestion.connectors.clinical_trials import ClinicalTrialsConnector
-        rms = await asyncio.wait_for(
-            ClinicalTrialsConnector().collect(queries, ["GB"], ["en"]),
-            timeout=10.0,
-        )
-        return [_raw_mention_to_dict(rm) for rm in rms]
-    except Exception:
-        return []
-
-
-async def _fetch_openfda_grounding(queries: List[str]) -> List[dict]:
-    try:
-        from ingestion.connectors.openfda import OpenFDAConnector
-        rms = await asyncio.wait_for(
-            OpenFDAConnector().collect(queries, ["GB"], ["en"]),
-            timeout=12.0,
-        )
-        return [_raw_mention_to_dict(rm) for rm in rms]
-    except Exception:
-        return []
-
-
-def _round_robin_dedupe(buckets: List[List[dict]], max_results: int) -> List[dict]:
-    """Interleave per-source lists so the AI sees a mix, not 8 news in a row.
-
-    Dedup by URL since the same article can surface across our fan-out locales.
-    """
-    out: List[dict] = []
-    seen_urls: set = set()
-    i = 0
-    while len(out) < max_results and any(bucket for bucket in buckets):
-        bucket = buckets[i % len(buckets)]
-        i += 1
-        if not bucket:
-            continue
-        item = bucket.pop(0)
-        url = item.get("source_url")
-        if url and url in seen_urls:
-            continue
-        if url:
-            seen_urls.add(url)
-        out.append(item)
-    return out
-
-
-async def _fetch_grounding_context(queries: List[str], max_results: int = 8) -> List[dict]:
-    """Multi-source grounding: News + Wikipedia + PubMed in parallel.
-
-    Each source is wrapped in its own timeout so a single slow upstream
-    can't take down the whole fan-out. Results are round-robin merged so
-    the LLM gets a balanced mix rather than 8 news articles in a row.
-    """
-    news, wiki, pubmed, trials, fda = await asyncio.gather(
-        _fetch_news_context(queries, max_results=max_results),
-        _fetch_wikipedia_grounding(queries),
-        _fetch_pubmed_grounding(queries),
-        _fetch_clinical_trials_grounding(queries),
-        _fetch_openfda_grounding(queries),
-        return_exceptions=True,
-    )
-    buckets = [r if isinstance(r, list) else [] for r in (news, wiki, pubmed, trials, fda)]
-    return _round_robin_dedupe(buckets, max_results)
-
-
-def _build_context_block(sources: List[dict]) -> str:
-    """Format numbered context block — the [n] indices align with `sources`
-    output order so the model's citations map to the source cards 1-to-1."""
-    if not sources:
-        return ""
-    lines = []
-    for i, r in enumerate(sources[:8], start=1):
-        country = r.get("country", "") or ""
-        snippet = (r.get("text") or "")[:220].replace("\n", " ").strip()
-        lines.append(f"[{i}] ({r.get('source_type', 'src').upper()} · {country}) {snippet}")
-    return "\n\nNumbered sources for grounding (cite using [n]):\n" + "\n".join(lines)
+    role: str
+    role_label: str
+    metrics: Optional[SearchIntelligence] = None
 
 
 async def _synthesise(
     query: str,
-    sources: List[dict],
     expanded_terms: List[str],
     t0: float,
     lang: str = "en",
+    role: str = "admin",
+    user_id: Optional[int] = None,
+    background_tasks: Optional[BackgroundTasks] = None,
 ) -> AISearchResponse:
-    """Shared LLM call used by both GET and POST endpoints."""
+    """Independent LLM synthesis — the model researches the query itself; no
+    connector sources are supplied (that's Live Search's job)."""
     from openai import AsyncOpenAI
 
     client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
@@ -338,24 +175,17 @@ async def _synthesise(
             f"{', '.join(expanded_terms)}."
         )
 
-    user_message = (
-        f'Analyse this pharmaceutical query: "{query}"'
-        f"{expansion_note}"
-        f"{_build_context_block(sources)}"
-    )
+    user_message = f'Analyse this pharmaceutical query: "{query}"{expansion_note}'
 
     try:
-        completion = await asyncio.wait_for(
-            client.chat.completions.create(
-                model=settings.OPENAI_MODEL,
-                messages=[
-                    {"role": "system", "content": _build_system_prompt(lang)},
-                    {"role": "user", "content": user_message},
-                ],
-                max_completion_tokens=700,
-                response_format={"type": "json_object"},
-            ),
-            timeout=20.0,
+        completion = await _call_model(
+            client,
+            messages=[
+                {"role": "system", "content": _build_system_prompt(lang, role)},
+                {"role": "user", "content": user_message},
+            ],
+            # AI mode always researches independently → allow web search.
+            allow_web_search=True,
         )
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="AI model timed out. Please try again.")
@@ -367,6 +197,24 @@ async def _synthesise(
         parsed = json.loads(raw)
     except json.JSONDecodeError:
         parsed = {}
+
+    # Surface the references the model itself cited (from its own knowledge / web
+    # search) as the source cards.
+    sources: List[dict] = []
+    for ms in (parsed.get("sources") or [])[:8]:
+        if not isinstance(ms, dict):
+            continue
+        url = ms.get("url") or ms.get("source_url")
+        title = ms.get("title") or ms.get("name") or url
+        if not (url or title):
+            continue
+        sources.append({
+            "source_type": "web",
+            "source_url": url,
+            "text": title or url,
+            "sentiment": "neutral",
+            "country": ms.get("country"),
+        })
 
     answer = parsed.get("answer", f"No AI summary available for '{query}'.")
     key_points = parsed.get("key_points", [])
@@ -388,6 +236,71 @@ async def _synthesise(
         for r in sources[:8]
     ]
 
+    elapsed_ms = int((time.time() - t0) * 1000)
+
+    # Per-search DIA intelligence — framework tier (BPI/momentum/… for the resolved
+    # brand) is corpus-based and independent of the AI text; snapshot tier is thin
+    # here (the model's own cited sources). Computed off-thread (sync DB modules).
+    si = await asyncio.get_event_loop().run_in_executor(
+        None,
+        build_search_intelligence,
+        [
+            {
+                "source_type": s.get("source_type"),
+                "country": s.get("country"),
+                "language": s.get("language"),
+                "published_at": s.get("published_at"),
+                "sentiment": s.get("sentiment"),
+                "topic": s.get("topic"),
+                "risk_type": s.get("risk_type"),
+                "engagement": None,
+            }
+            for s in sources[:8]
+        ],
+        role, query, expanded_terms, "ai",
+    )
+
+    if background_tasks is not None:
+        background_tasks.add_task(
+            log_search_query,
+            mode=SearchMode.ai,
+            q=query,
+            user_id=user_id,
+            lang=lang,
+            role=role,
+            expanded_terms=expanded_terms,
+            metrics=flatten_for_db(si),
+            results=[
+                {
+                    "rank": i,
+                    "source_type": s.get("source_type"),
+                    "source_url": s.get("source_url"),
+                    "snippet": s.get("text"),
+                    "sentiment": s.get("sentiment"),
+                    "country": s.get("country"),
+                    "language": s.get("language"),
+                }
+                for i, s in enumerate(sources[:8], start=1)
+            ],
+            ai_answer={
+                "answer": answer,
+                "key_points": key_points,
+                "sentiment_summary": sentiment_summary,
+                "disclaimer": disclaimer,
+                "grounding_sources": [
+                    {
+                        "ref": i,
+                        "source_type": s.get("source_type"),
+                        "source_url": s.get("source_url"),
+                        "snippet": (s.get("text") or "")[:300],
+                    }
+                    for i, s in enumerate(sources[:8], start=1)
+                ],
+            },
+            ai_model=settings.OPENAI_MODEL,
+            elapsed_ms=elapsed_ms,
+        )
+
     return AISearchResponse(
         query=query,
         answer=answer,
@@ -397,14 +310,19 @@ async def _synthesise(
         sources=source_models,
         expanded_terms=expanded_terms,
         model=settings.OPENAI_MODEL,
-        elapsed_ms=int((time.time() - t0) * 1000),
+        elapsed_ms=elapsed_ms,
+        role=role,
+        role_label=role_label(role),
+        metrics=si,
     )
 
 
 @router.get("/ai", response_model=AISearchResponse)
 async def ai_search(
+    background_tasks: BackgroundTasks,
     q: str = Query(..., min_length=2, description="Brand, drug, or topic to analyse"),
     lang: str = Query("en", description="Output language: en, fr, nl, de"),
+    role: Optional[str] = Query(None, description="Role lens: pharmacist, marketing, brand_manager, admin"),
     current_user: User = Depends(get_current_user),
 ):
     if not settings.OPENAI_API_KEY:
@@ -414,25 +332,11 @@ async def ai_search(
         )
 
     t0 = time.time()
-    expanded = expand_query(q.strip(), max_terms=5)
-    live_results = await _fetch_grounding_context(expanded)
-    return await _synthesise(q, live_results, expanded, t0, lang=lang)
-
-
-@router.post("/ai", response_model=AISearchResponse)
-async def ai_search_from_results(
-    payload: AISearchFromResultsRequest,
-    current_user: User = Depends(get_current_user),
-):
-    """Bridge endpoint: synthesise from results the user already saw in Live
-    Search. Skips the fresh news fetch — the live snippets ARE the context."""
-    if not settings.OPENAI_API_KEY:
-        raise HTTPException(
-            status_code=503,
-            detail="OpenAI API key not configured. Set OPENAI_API_KEY in your .env file.",
-        )
-
-    t0 = time.time()
-    expanded = expand_query(payload.q.strip(), max_terms=5)
-    sources = [s.model_dump() for s in payload.sources][:8]
-    return await _synthesise(payload.q, sources, expanded, t0, lang=payload.lang or "en")
+    lens = resolve_role(current_user, role)
+    expanded = expand_query(q.strip(), max_terms=8)
+    # AI mode researches the query itself (own knowledge + web search) and returns
+    # the references it used. It is fully independent of Live Search.
+    return await _synthesise(
+        q, expanded, t0, lang=lang, role=lens,
+        user_id=current_user.id, background_tasks=background_tasks,
+    )

@@ -9,63 +9,183 @@ html { font-family: 'Inter', ui-sans-serif, system-ui, sans-serif; }
   html { font-family: 'Inter var', 'Inter', ui-sans-serif, system-ui, sans-serif; }
 }
 
+/* ════════════════════════════════════════════════════════════════════════
+   DARK "COMMAND CENTER" THEME
+   The whole app lives on a deep navy canvas. Most pages were authored with
+   light Tailwind utilities (bg-white, text-gray-*, border-gray-*); rather than
+   edit every page, we recolour those utilities *within the workspace* so all
+   tabs convert at once and stay consistent. Explicit components (sidebar,
+   login, cards) get richer glass/glow treatment on top.
+   ════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  --bg:        #0b0f1a;   /* canvas */
+  --surface:   rgba(255,255,255,0.045);
+  --surface-2: rgba(255,255,255,0.07);
+  --border:    rgba(148,163,184,0.14);
+  --border-2:  rgba(148,163,184,0.22);
+  --text:      #e7ecf5;
+  --text-2:    #aeb9cd;
+  --text-3:    #74819a;
+  --brand:     #5b86ff;
+  --accent:    #a486ff;
+  --cyan:      #34d3ee;
+}
+
 body {
-  @apply bg-slate-50 text-slate-900 antialiased;
+  @apply antialiased;
+  background-color: var(--bg);
+  color: var(--text);
   font-feature-settings: "cv11", "ss01";
   font-variant-numeric: tabular-nums;
 }
 
-/* Subtle radial wash for the main content surface — premium without competing with data. */
+/* Workspace canvas — layered radial glows + faint grid for that terminal feel. */
 .surface-app {
-  background-color: #f8fafc;
+  background-color: var(--bg);
   background-image:
-    radial-gradient(900px 480px at 8% -20%, rgba(63, 109, 255, 0.06), transparent 60%),
-    radial-gradient(800px 480px at 110% 0%, rgba(136, 93, 250, 0.05), transparent 60%);
+    radial-gradient(1100px 600px at 6% -10%, rgba(91,134,255,0.16), transparent 55%),
+    radial-gradient(900px 600px at 108% 4%, rgba(164,134,255,0.16), transparent 55%),
+    radial-gradient(700px 500px at 50% 120%, rgba(52,211,238,0.08), transparent 60%),
+    linear-gradient(rgba(148,163,184,0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148,163,184,0.04) 1px, transparent 1px);
+  background-size: auto, auto, auto, 34px 34px, 34px 34px;
 }
 
-/* Refined scrollbar */
+/* ── Glass card: the de-facto card in every page is `bg-white rounded-xl border`.
+   Promote it to a frosted dark panel with a soft top highlight + glow on hover. */
+.surface-app .bg-white {
+  background: linear-gradient(180deg, rgba(255,255,255,0.055), rgba(255,255,255,0.02)) !important;
+  border-color: var(--border) !important;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 1px 0 0 rgba(255,255,255,0.05) inset, 0 18px 40px -28px rgba(0,0,0,0.8);
+}
+.surface-app .bg-white:hover { border-color: var(--border-2) !important; }
+
+/* Secondary fills */
+.surface-app .bg-slate-50,
+.surface-app .bg-gray-50    { background-color: rgba(255,255,255,0.03) !important; }
+.surface-app .bg-slate-100,
+.surface-app .bg-gray-100   { background-color: rgba(255,255,255,0.07) !important; }
+
+/* Text ramp */
+.surface-app .text-gray-900, .surface-app .text-slate-900 { color: var(--text) !important; }
+.surface-app .text-gray-800, .surface-app .text-slate-800 { color: var(--text) !important; }
+.surface-app .text-gray-700, .surface-app .text-slate-700 { color: #d3dbea !important; }
+.surface-app .text-gray-600, .surface-app .text-slate-600 { color: var(--text-2) !important; }
+.surface-app .text-gray-500, .surface-app .text-slate-500 { color: var(--text-2) !important; }
+.surface-app .text-gray-400, .surface-app .text-slate-400 { color: var(--text-3) !important; }
+.surface-app .text-gray-300, .surface-app .text-slate-300 { color: var(--text-3) !important; }
+
+/* Borders + dividers */
+.surface-app .border-gray-200, .surface-app .border-slate-200,
+.surface-app .border-gray-100, .surface-app .border-slate-100,
+.surface-app .border-gray-300 { border-color: var(--border) !important; }
+.surface-app .divide-gray-50  > :not([hidden]) ~ :not([hidden]),
+.surface-app .divide-gray-100 > :not([hidden]) ~ :not([hidden]),
+.surface-app .divide-slate-50 > :not([hidden]) ~ :not([hidden]) {
+  border-color: var(--border) !important;
+}
+
+/* Pastel status pills → translucent neon tints that read on dark */
+.surface-app .bg-green-100, .surface-app .bg-emerald-50, .surface-app .bg-emerald-100 { background-color: rgba(34,197,94,0.16) !important; }
+.surface-app .text-green-700, .surface-app .text-emerald-700, .surface-app .text-green-600 { color: #4ade80 !important; }
+.surface-app .bg-red-100 { background-color: rgba(239,68,68,0.16) !important; }
+.surface-app .text-red-700, .surface-app .text-red-600, .surface-app .text-red-500 { color: #fb7185 !important; }
+.surface-app .bg-amber-100, .surface-app .bg-amber-50 { background-color: rgba(245,158,11,0.16) !important; }
+.surface-app .text-amber-700, .surface-app .text-amber-800 { color: #fbbf24 !important; }
+.surface-app .bg-blue-100, .surface-app .bg-blue-50 { background-color: rgba(91,134,255,0.16) !important; }
+.surface-app .text-blue-700, .surface-app .text-blue-600, .surface-app .text-blue-900 { color: #8aa6ff !important; }
+.surface-app .bg-purple-100 { background-color: rgba(164,134,255,0.18) !important; }
+.surface-app .text-purple-700, .surface-app .text-purple-600 { color: #c4b1ff !important; }
+
+/* Hover affordances */
+.surface-app .hover\:bg-gray-100:hover, .surface-app .hover\:bg-slate-100:hover { background-color: rgba(255,255,255,0.07) !important; }
+.surface-app .hover\:bg-blue-50:hover { background-color: rgba(91,134,255,0.14) !important; }
+.surface-app .hover\:bg-red-50:hover { background-color: rgba(239,68,68,0.14) !important; }
+
+/* Light gradient panels (e.g. weekly-summary from-blue-50 to-indigo-50) */
+.surface-app .from-blue-50 { --tw-gradient-from: rgba(91,134,255,0.12) var(--tw-gradient-from-position) !important; }
+.surface-app .to-indigo-50 { --tw-gradient-to:   rgba(164,134,255,0.10) var(--tw-gradient-to-position) !important; }
+.surface-app .from-blue-50.to-indigo-50,
+.surface-app .border-blue-100 { border-color: rgba(91,134,255,0.22) !important; }
+
+/* Inputs / selects / textareas → dark fields */
+.surface-app input,
+.surface-app select,
+.surface-app textarea {
+  background-color: rgba(2,6,23,0.55) !important;
+  border-color: var(--border) !important;
+  color: var(--text) !important;
+}
+.surface-app input::placeholder, .surface-app textarea::placeholder { color: var(--text-3) !important; }
+.surface-app select option { background-color: #121829; color: var(--text); }
+
+/* Recharts → light ticks, faint grid, dark tooltips */
+.surface-app .recharts-text,
+.surface-app .recharts-cartesian-axis-tick text { fill: var(--text-3) !important; }
+.surface-app .recharts-cartesian-grid line { stroke: rgba(148,163,184,0.12) !important; }
+.surface-app .recharts-legend-item-text { color: var(--text-2) !important; }
+.surface-app .recharts-default-tooltip {
+  background: rgba(12,17,30,0.95) !important;
+  border: 1px solid var(--border-2) !important;
+  border-radius: 10px !important;
+  color: var(--text) !important;
+}
+
+/* Keep vivid gradient CTAs/brand marks punchy (don't dim them) */
+.surface-app .bg-gradient-to-r.from-blue-600,
+.surface-app .bg-gradient-to-br.from-brand-500 { box-shadow: 0 10px 30px -10px rgba(91,134,255,0.5); }
+
+/* ── Reusable rich components ──────────────────────────────────────────── */
+.glass {
+  background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.025));
+  border: 1px solid var(--border);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+.glow-brand  { box-shadow: 0 0 0 1px rgba(91,134,255,0.25), 0 10px 34px -12px rgba(91,134,255,0.45); }
+.glow-accent { box-shadow: 0 0 0 1px rgba(164,134,255,0.25), 0 10px 34px -12px rgba(164,134,255,0.5); }
+.text-gradient {
+  background: linear-gradient(90deg, #8aa6ff, #c4b1ff 60%, #6ee7ff);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+
+/* Refined dark scrollbar */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background-color: rgba(15, 23, 42, 0.12);
+  background-color: rgba(148,163,184,0.22);
   border-radius: 8px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
-::-webkit-scrollbar-thumb:hover { background-color: rgba(15, 23, 42, 0.22); }
+::-webkit-scrollbar-thumb:hover { background-color: rgba(148,163,184,0.38); }
 
-/* Better default focus ring than the browser's */
+/* Focus ring */
 :focus-visible {
   outline: none;
-  box-shadow: 0 0 0 4px rgba(63, 109, 255, 0.18);
+  box-shadow: 0 0 0 3px rgba(91,134,255,0.45);
   border-radius: 8px;
 }
 
-/* Skeleton shimmer block */
+/* Skeleton shimmer block (dark) */
 .skeleton {
-  background: linear-gradient(
-    90deg,
-    rgba(226, 232, 240, 0.6) 0%,
-    rgba(226, 232, 240, 0.95) 50%,
-    rgba(226, 232, 240, 0.6) 100%
-  );
+  background: linear-gradient(90deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.10) 50%, rgba(255,255,255,0.04) 100%);
   background-size: 936px 100%;
   animation: shimmer 1.4s ease-in-out infinite linear;
 }
 
-/* Card hover-lift utility */
-.lift {
-  transition: transform 200ms ease, box-shadow 200ms ease, border-color 200ms ease;
-}
+/* Card hover-lift (dark glow) */
+.lift { transition: transform 200ms ease, box-shadow 200ms ease, border-color 200ms ease; }
 .lift:hover {
-  transform: translateY(-1px);
-  box-shadow:
-    0 12px 24px -10px rgba(15, 23, 42, 0.10),
-    0 4px 8px -2px rgba(15, 23, 42, 0.05);
+  transform: translateY(-2px);
+  box-shadow: 0 0 0 1px rgba(91,134,255,0.22), 0 18px 40px -18px rgba(91,134,255,0.35);
 }
 
 /* Sentiment accent bar (left edge of result cards) */
-.accent-positive { box-shadow: inset 4px 0 0 0 #16a34a; }
-.accent-neutral  { box-shadow: inset 4px 0 0 0 #94a3b8; }
-.accent-negative { box-shadow: inset 4px 0 0 0 #dc2626; }
-.accent-risk     { box-shadow: inset 4px 0 0 0 #dc2626, 0 0 0 1px rgba(239, 68, 68, 0.15); }
+.accent-positive { box-shadow: inset 4px 0 0 0 #22c55e; }
+.accent-neutral  { box-shadow: inset 4px 0 0 0 #64748b; }
+.accent-negative { box-shadow: inset 4px 0 0 0 #ef4444; }
+.accent-risk     { box-shadow: inset 4px 0 0 0 #ef4444, 0 0 0 1px rgba(239, 68, 68, 0.25); }

@@ -30,8 +30,7 @@ def process_pending_mentions(self, batch_size: int = 100):
     """
     from processing.language_detection import detect_language
     from processing.entity_resolution import resolve
-    from processing.sentiment import classify_sentiment
-    from processing.topic_classifier import classify_topic, classify_intent
+    from processing.llm_classifier import classify_mention, verify_risk_with_llm
     from processing.risk_detector import detect_risk
     from processing.embeddings import upsert_mention_embedding
     from intelligence.alert_engine import process_mention_alerts
@@ -74,12 +73,24 @@ def process_pending_mentions(self, batch_size: int = 100):
                             confidence=ent["confidence"],
                         ))
 
-                sentiment, sent_score = classify_sentiment(text)
-                topic, topic_score = classify_topic(text)
-                intent, intent_score = classify_intent(text)
+                # ONE LLM call covers sentiment + topic + intent + AE context.
+                classified = classify_mention(text, lang=lang)
+                sentiment = classified["sentiment"]
+                topic = classified["topic"]
+                intent = classified["intent"]
+                llm_confidence = classified["confidence"]
+
+                # Regex risk first-pass (high recall, must never be skipped).
                 risk = detect_risk(text, lang=lang)
 
-                avg_confidence = round((sent_score + topic_score) / 2, 4)
+                # LLM second-pass false-positive reducer for AE candidates.
+                # Never drops the flag — only annotates confidence so reviewers
+                # can triage. Pharmacovigilance must keep human-in-the-loop.
+                if risk.is_adverse_event_candidate:
+                    verdict = verify_risk_with_llm(text, "adverse_event")
+                    avg_confidence = round((llm_confidence + verdict["confidence"]) / 2, 4)
+                else:
+                    avg_confidence = round(llm_confidence, 4)
 
                 classification = MentionClassification(
                     mention_id=mention.id,
@@ -90,7 +101,7 @@ def process_pending_mentions(self, batch_size: int = 100):
                     is_adverse_event_candidate=risk.is_adverse_event_candidate,
                     is_prescription_promotion=risk.is_prescription_promotion,
                     confidence_score=avg_confidence,
-                    model_name=f"{settings.SENTIMENT_MODEL}|{settings.TOPIC_MODEL}",
+                    model_name=classified["model"],
                 )
                 db.add(classification)
                 db.flush()

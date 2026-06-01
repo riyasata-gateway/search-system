@@ -75,9 +75,6 @@ const STRINGS: Record<string, Record<Locale, string>> = {
   "sentiment.neutral":  { en: "Neutral",  fr: "Neutre",    nl: "Neutraal",  de: "Neutral" },
   "sentiment.negative": { en: "Negative", fr: "Négatif",   nl: "Negatief",  de: "Negativ" },
 
-  // Bridge button
-  "live.askAi":         { en: "Ask AI about these results", fr: "Synthèse IA de ces résultats", nl: "Vraag AI over deze resultaten", de: "KI zu diesen Ergebnissen fragen" },
-  "live.askAi.title":   { en: "Synthesise these results with the AI Mode (no second fetch)", fr: "Synthétiser ces résultats avec le mode IA (sans seconde requête)", nl: "Synthetiseer deze resultaten met de AI-modus (geen tweede ophaalactie)", de: "Diese Ergebnisse mit dem KI-Modus zusammenfassen (ohne zweiten Abruf)" },
 
   // Insight panel titles
   "insight.sentiment":  { en: "Sentiment",        fr: "Sentiment",        nl: "Sentiment",        de: "Stimmung" },
@@ -93,6 +90,8 @@ const STRINGS: Record<string, Record<Locale, string>> = {
   "risk.headline.one":  { en: "1 mention flagged for adverse-event review",        fr: "1 mention signalée pour examen d'événement indésirable",        nl: "1 vermelding gemarkeerd voor bijwerkingsbeoordeling",          de: "1 Erwähnung für Nebenwirkungsprüfung markiert" },
   "risk.subline":       { en: "The pharmacovigilance officer should triage these candidates — human review is mandatory.", fr: "Le responsable de pharmacovigilance doit trier ces candidats — la revue humaine est obligatoire.", nl: "De farmacovigilantiefunctionaris moet deze kandidaten triëren — menselijke beoordeling is verplicht.", de: "Der Pharmakovigilanzbeauftragte muss diese Kandidaten triagieren — menschliche Prüfung ist Pflicht." },
   "risk.cta":           { en: "Review queue →",   fr: "File de revue →",  nl: "Beoordelingswachtrij →", de: "Prüfungs­warteschlange →" },
+  "risk.escalating":    { en: "Adding to queue…", fr: "Ajout à la file…", nl: "Toevoegen aan wachtrij…", de: "Zur Warteschlange…" },
+  "risk.escalateError": { en: "Could not add to the review queue. Try again.", fr: "Impossible d'ajouter à la file de revue. Réessayez.", nl: "Kon niet aan de wachtrij worden toegevoegd. Probeer opnieuw.", de: "Konnte nicht zur Warteschlange hinzugefügt werden. Erneut versuchen." },
 
   // No results / empty state
   "noResults.headline": { en: "No results found for", fr: "Aucun résultat pour", nl: "Geen resultaten voor", de: "Keine Ergebnisse für" },
@@ -117,7 +116,6 @@ const STRINGS: Record<string, Record<Locale, string>> = {
   "ai.askButton":       { en: "Ask AI",           fr: "Interroger l'IA",  nl: "Vraag AI",         de: "KI fragen" },
   "ai.analysing":       { en: "Analysing…",       fr: "Analyse en cours…", nl: "Analyseren…",     de: "Analysiere…" },
   "ai.analysingFor":    { en: "Analysing \"{q}\"…", fr: "Analyse de « {q} »…", nl: "Analyseren van \"{q}\"…", de: "Analysiere \"{q}\"…" },
-  "ai.bridgeFromN":     { en: "Synthesising from {n} live results · GPT-5.4-mini", fr: "Synthèse à partir de {n} résultats en direct · GPT-5.4-mini", nl: "Synthetiseren van {n} live resultaten · GPT-5.4-mini", de: "Synthese aus {n} Live-Ergebnissen · GPT-5.4-mini" },
   "ai.fetchHint":       { en: "Fetching live news context · Synthesising with GPT-5.4-mini · Usually 3–8 seconds", fr: "Récupération du contexte d'actualité · Synthèse avec GPT-5.4-mini · Généralement 3 à 8 secondes", nl: "Live nieuwscontext ophalen · Synthese met GPT-5.4-mini · Meestal 3–8 seconden", de: "Live-Nachrichtenkontext wird geholt · Synthese mit GPT-5.4-mini · Üblicherweise 3–8 Sekunden" },
   "ai.error":           { en: "AI search failed. Check that OPENAI_API_KEY is configured and the API server is running.", fr: "La recherche IA a échoué. Vérifiez que OPENAI_API_KEY est configurée et que l'API tourne.", nl: "AI-zoekopdracht mislukt. Controleer of OPENAI_API_KEY is ingesteld en de API draait.", de: "KI-Suche fehlgeschlagen. Prüfen Sie, ob OPENAI_API_KEY konfiguriert ist und der API-Server läuft." },
   "ai.overview":        { en: "AI Overview",      fr: "Aperçu IA",        nl: "AI-overzicht",     de: "KI-Übersicht" },
@@ -131,6 +129,31 @@ const STRINGS: Record<string, Record<Locale, string>> = {
   // Sidebar (Layout) — partial: just Log out + chooser label
   "nav.logout":         { en: "Log out",          fr: "Déconnexion",      nl: "Afmelden",         de: "Abmelden" },
   "nav.language":       { en: "Language",         fr: "Langue",           nl: "Taal",             de: "Sprache" },
+
+  // Role lens
+  "role.pharmacist":    { en: "Pharmacist",       fr: "Pharmacien",       nl: "Apotheker",        de: "Apotheker" },
+  "role.marketing":     { en: "Marketing",        fr: "Marketing",        nl: "Marketing",        de: "Marketing" },
+  "role.brand_manager": { en: "Brand Manager",    fr: "Chef de marque",   nl: "Merkmanager",      de: "Markenmanager" },
+  "role.admin":         { en: "Admin",            fr: "Admin",            nl: "Admin",            de: "Admin" },
+  "lens.label":         { en: "Tailored for",     fr: "Adapté pour",      nl: "Afgestemd op",     de: "Zugeschnitten auf" },
+  "lens.viewAs":        { en: "View as",          fr: "Voir en tant que", nl: "Bekijken als",     de: "Anzeigen als" },
+  "lens.adminHint":     { en: "Admin — compare how each role sees the same query", fr: "Admin — comparez la vue de chaque rôle pour la même requête", nl: "Admin — vergelijk hoe elke rol dezelfde zoekopdracht ziet", de: "Admin — vergleichen Sie, wie jede Rolle dieselbe Abfrage sieht" },
+  "lens.focus.pharmacist": { en: "Availability & shortages, side effects, dosage and OTC counseling first.", fr: "Disponibilité et ruptures, effets secondaires, posologie et conseil OTC en priorité.", nl: "Beschikbaarheid en tekorten, bijwerkingen, dosering en OTC-advies eerst.", de: "Verfügbarkeit & Engpässe, Nebenwirkungen, Dosierung und OTC-Beratung zuerst." },
+  "lens.focus.marketing":  { en: "Reach & engagement, social buzz, sentiment and message resonance first.", fr: "Portée et engagement, buzz social, sentiment et résonance des messages en priorité.", nl: "Bereik en betrokkenheid, social buzz, sentiment en boodschapresonantie eerst.", de: "Reichweite & Engagement, Social Buzz, Stimmung und Botschaftsresonanz zuerst." },
+  "lens.focus.brand_manager": { en: "Market share, competitive positioning, demand trends, launch & brand risk first.", fr: "Part de marché, positionnement concurrentiel, tendances de la demande, lancement et risque de marque en priorité.", nl: "Marktaandeel, concurrentiepositie, vraagtrends, lancering en merkrisico eerst.", de: "Marktanteil, Wettbewerbspositionierung, Nachfragetrends, Launch & Markenrisiko zuerst." },
+  "lens.focus.admin":      { en: "Balanced full view across every source and topic.", fr: "Vue complète et équilibrée sur toutes les sources et tous les sujets.", nl: "Gebalanceerd volledig overzicht over alle bronnen en onderwerpen.", de: "Ausgewogene Gesamtansicht über alle Quellen und Themen." },
+
+  // YouTube analytics
+  "yt.analytics":       { en: "YouTube analytics", fr: "Analytique YouTube", nl: "YouTube-analyse", de: "YouTube-Analyse" },
+  "yt.topChannels":     { en: "Top channels by views", fr: "Top chaînes par vues", nl: "Top kanalen op weergaven", de: "Top-Kanäle nach Aufrufen" },
+  "yt.viewsOverTime":   { en: "Views over time",   fr: "Vues dans le temps", nl: "Weergaven over tijd", de: "Aufrufe im Zeitverlauf" },
+  "yt.mostEngaged":     { en: "Most-engaged videos", fr: "Vidéos les plus engageantes", nl: "Meest betrokken video's", de: "Videos mit der höchsten Interaktion" },
+  "yt.views":           { en: "views",             fr: "vues",             nl: "weergaven",        de: "Aufrufe" },
+  "yt.likes":           { en: "likes",             fr: "j'aime",           nl: "likes",            de: "Likes" },
+  "yt.comments":        { en: "comments",          fr: "commentaires",     nl: "reacties",         de: "Kommentare" },
+  "yt.watch":           { en: "Watch on YouTube",  fr: "Voir sur YouTube", nl: "Bekijk op YouTube", de: "Auf YouTube ansehen" },
+  "yt.videos":          { en: "videos",            fr: "vidéos",           nl: "video's",          de: "Videos" },
+  "yt.empty":           { en: "No YouTube metrics yet — add youtube to your sources.", fr: "Pas encore de métriques YouTube — ajoutez youtube à vos sources.", nl: "Nog geen YouTube-statistieken — voeg youtube toe aan je bronnen.", de: "Noch keine YouTube-Metriken — fügen Sie YouTube zu Ihren Quellen hinzu." },
 };
 
 interface Ctx {
