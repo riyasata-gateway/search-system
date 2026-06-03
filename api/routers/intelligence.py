@@ -47,7 +47,11 @@ router = APIRouter()
 def get_bpi_for_brand(
     brand_id: int,
     country: Optional[str] = Query(None, max_length=2),
-    window_days: int = Query(90, ge=7, le=365),
+    # Default to a full year: BPI assesses brand *health* over history, and a
+    # 90-day window leaves most of the corpus out (mentions skew older), which
+    # made every brand collapse to the neutral 50 fallback. Matches the framework
+    # tier's _BPI_WINDOW=365 in intelligence/search_intelligence.py.
+    window_days: int = Query(365, ge=7, le=365),
     db: Session = Depends(get_sync_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -60,7 +64,11 @@ def get_bpi_for_brand(
 @router.get("/bpi")
 def list_bpi(
     country: Optional[str] = Query(None, max_length=2),
-    window_days: int = Query(90, ge=7, le=365),
+    # Default to a full year: BPI assesses brand *health* over history, and a
+    # 90-day window leaves most of the corpus out (mentions skew older), which
+    # made every brand collapse to the neutral 50 fallback. Matches the framework
+    # tier's _BPI_WINDOW=365 in intelligence/search_intelligence.py.
+    window_days: int = Query(365, ge=7, le=365),
     limit: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_sync_db),
     current_user: User = Depends(require_lab),
@@ -156,7 +164,11 @@ def flywheel_log(
 def flywheel_acceptance(
     subject_type: Optional[ActionSubjectType] = Query(None),
     bucket_key: str = Query("category"),
-    window_days: int = Query(90, ge=7, le=365),
+    # Default to a full year: BPI assesses brand *health* over history, and a
+    # 90-day window leaves most of the corpus out (mentions skew older), which
+    # made every brand collapse to the neutral 50 fallback. Matches the framework
+    # tier's _BPI_WINDOW=365 in intelligence/search_intelligence.py.
+    window_days: int = Query(365, ge=7, le=365),
     db: Session = Depends(get_sync_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -227,7 +239,11 @@ def launch_readiness_ranking(
 def key_messages(
     brand_id: int,
     country: Optional[str] = Query(None, max_length=2),
-    window_days: int = Query(90, ge=7, le=365),
+    # Default to a full year: BPI assesses brand *health* over history, and a
+    # 90-day window leaves most of the corpus out (mentions skew older), which
+    # made every brand collapse to the neutral 50 fallback. Matches the framework
+    # tier's _BPI_WINDOW=365 in intelligence/search_intelligence.py.
+    window_days: int = Query(365, ge=7, le=365),
     db: Session = Depends(get_sync_db),
     current_user: User = Depends(require_lab),
 ):

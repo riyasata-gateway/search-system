@@ -189,6 +189,9 @@ export default function LabDashboard() {
   const bpiHead = headline(bpi);
   const launchHead = headline(launch);
   const momentumHead = headline(momentum);
+  // No mentions in window → the score is the neutral fallback, not a real reading.
+  const bpiInsufficient = (bpiHead?.sample_size ?? 0) === 0;
+  const launchInsufficient = (launchHead?.sample_size ?? 0) === 0;
   const keyHead = headline(keyMsg);
   const winning = keyMsg?.context?.winning ?? [];
   const losing = keyMsg?.context?.losing ?? [];
@@ -257,8 +260,8 @@ export default function LabDashboard() {
           </>
         ) : (
           <>
-            <KpiCard label="Brand Potential Index" value={fmt(bpiHead?.value)} suffix="/100" icon={Target} colour="text-purple-600" />
-            <KpiCard label="Launch Readiness" value={fmt(launchHead?.value)} suffix="/100" icon={Rocket} colour="text-indigo-600" />
+            <KpiCard label="Brand Potential Index" value={bpiInsufficient ? "n/a" : fmt(bpiHead?.value)} suffix={bpiInsufficient ? "" : "/100"} icon={Target} colour="text-purple-600" />
+            <KpiCard label="Launch Readiness" value={launchInsufficient ? "n/a" : fmt(launchHead?.value)} suffix={launchInsufficient ? "" : "/100"} icon={Rocket} colour="text-indigo-600" />
             <KpiCard label="Risk Mentions" value={riskMentions} icon={AlertTriangle} colour="text-orange-500" />
           </>
         )}
@@ -305,16 +308,24 @@ export default function LabDashboard() {
           <div className="bg-white rounded-xl border border-gray-200 p-5">
             <h2 className="text-base font-semibold text-gray-900 mb-4">Brand Potential Index</h2>
             <div className="space-y-3">
-              {(bpi?.metrics ?? []).map((m: any, i: number) => (
-                <GaugeBar key={i} label={m.label} value={m.value} unit={m.unit === "%" ? "%" : ""} />
-              ))}
+              {bpiInsufficient ? (
+                <p className="text-sm text-gray-400">Insufficient data — no mentions linked to this brand in the last 365 days, so a Brand Potential Index can't be scored yet.</p>
+              ) : (
+                (bpi?.metrics ?? []).map((m: any, i: number) => (
+                  <GaugeBar key={i} label={m.label} value={m.value} unit={m.unit === "%" ? "%" : ""} />
+                ))
+              )}
               {!bpi && <p className="text-sm text-gray-400">No BPI computed yet.</p>}
             </div>
           </div>
           <div className="bg-white rounded-xl border border-gray-200 p-5">
             <h2 className="text-base font-semibold text-gray-900 mb-4">Launch & Demand</h2>
             <div className="space-y-3">
-              <GaugeBar label={launchHead?.label ?? "Launch readiness"} value={launchHead?.value ?? null} unit="/100" />
+              {launchInsufficient ? (
+                <p className="text-sm text-gray-400">Launch readiness needs recent mentions to score — none in window yet.</p>
+              ) : (
+                <GaugeBar label={launchHead?.label ?? "Launch readiness"} value={launchHead?.value ?? null} unit="/100" />
+              )}
               <GaugeBar label="Demand momentum" value={momentumHead?.value ?? null} unit="/100" />
               <div className="pt-1 flex items-center justify-between text-sm">
                 <span className="text-gray-600">Open brand-risk / adverse-event queue</span>

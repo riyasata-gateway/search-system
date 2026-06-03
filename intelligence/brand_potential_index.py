@@ -61,6 +61,7 @@ class BPIResult:
     components: BPIComponents
     window_days: int
     adoption_is_proxy: bool = False
+    sample_size: int = 0  # mentions about THIS brand in-window — the honest "do we have data?" signal
 
     def to_bundle(self) -> MetricBundle:
         return MetricBundle(
@@ -68,6 +69,7 @@ class BPIResult:
             metrics=[
                 as_score(self.bpi_score, "Brand Potential Index",
                          confidence=self.components.confidence,
+                         sample_size=self.sample_size,
                          comparison_window=f"last {self.window_days}d"),
                 as_percent(self.components.awareness * 100, "Awareness"),
                 as_percent(self.components.adoption * 100,
@@ -330,6 +332,7 @@ def compute_bpi(
         components=comps,
         window_days=window_days,
         adoption_is_proxy=adoption_is_proxy,
+        sample_size=my_mentions,
     )
 
 

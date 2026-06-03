@@ -32,3 +32,4 @@ __pycache__/
 # Runtime / local scratch
 celerybeat-schedule
 summary
+data/

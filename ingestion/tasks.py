@@ -15,13 +15,94 @@ from models.search_topic import SearchTopic
 logger = get_logger(__name__)
 
 
-def _get_keywords_for_topic(topic: SearchTopic) -> list:
+def _topic_keywords(session, topic: SearchTopic) -> list:
+    """Build a search-keyword list from a topic's brand, products, aliases,
+    category and competitors. Returns human search terms (never raw ids)."""
     from models.brand import Brand
-    from models.product import Product, ProductAlias
-    keywords = []
+    from models.product import Product, ProductAlias, ProductCategory
+    from models.search_topic import SearchTopicCompetitor
+
+    keywords: list[str] = []
+
+    def _add(value):
+        if value and value.strip() and value.strip().lower() not in {k.lower() for k in keywords}:
+            keywords.append(value.strip())
+
+    brand_ids = []
     if topic.brand_id:
-        keywords.append(str(topic.brand_id))
+        brand_ids.append(topic.brand_id)
+    brand_ids += [
+        c.brand_id for c in session.execute(
+            select(SearchTopicCompetitor).where(SearchTopicCompetitor.search_topic_id == topic.id)
+        ).scalars().all()
+    ]
+
+    if brand_ids:
+        for name in session.execute(
+            select(Brand.name).where(Brand.id.in_(brand_ids))
+        ).scalars().all():
+            _add(name)
+
+        product_ids = session.execute(
+            select(Product.id).where(Product.brand_id.in_(brand_ids))
+        ).scalars().all()
+        for name in session.execute(
+            select(Product.name).where(Product.brand_id.in_(brand_ids))
+        ).scalars().all():
+            _add(name)
+        if product_ids:
+            for alias in session.execute(
+                select(ProductAlias.alias).where(ProductAlias.product_id.in_(product_ids))
+            ).scalars().all():
+                _add(alias)
+
+    if topic.category_id:
+        cat = session.get(ProductCategory, topic.category_id)
+        if cat:
+            for n in (cat.name_en, cat.name_fr, cat.name_nl, cat.name_de):
+                _add(n)
+
     return keywords
+
+
+def _resolve_collection_params(search_topic_id: Optional[int], source_type: str, default_keywords: list):
+    """Resolve (keywords, countries, languages, skip) for a collector run.
+
+    When a `search_topic_id` is supplied the topic's own configuration drives
+    collection: its keywords (brand/product/alias/category/competitors), its
+    markets and languages, and its per-source on/off switch. Without a topic we
+    fall back to the global defaults so periodic full-refresh keeps working.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    countries = settings.SUPPORTED_COUNTRIES
+    languages = settings.SUPPORTED_LANGUAGES
+
+    if search_topic_id is None:
+        return default_keywords, countries, languages, False
+
+    engine = create_engine(settings.DATABASE_SYNC_URL)
+    with Session(engine) as session:
+        topic = session.get(SearchTopic, search_topic_id)
+        if topic is None:
+            logger.warning("collection_topic_not_found", search_topic_id=search_topic_id)
+            return default_keywords, countries, languages, False
+
+        from models.search_topic import SearchTopicSource
+        srcs = session.execute(
+            select(SearchTopicSource).where(SearchTopicSource.search_topic_id == topic.id)
+        ).scalars().all()
+        # if the topic declares sources, honour its on/off switch for this one
+        if srcs and not any(s.source_type == source_type and s.is_enabled for s in srcs):
+            return default_keywords, countries, languages, True
+
+        keywords = _topic_keywords(session, topic) or default_keywords
+        if topic.countries:
+            countries = topic.countries
+        if topic.languages:
+            languages = topic.languages
+        return keywords, countries, languages, False
 
 
 def _persist_mentions(raw_mentions: list, source_type: str) -> int:
@@ -153,11 +234,14 @@ def collect_google_trends(self, search_topic_id: Optional[int] = None):
     from ingestion.connectors.google_trends import GoogleTrendsConnector
     import asyncio
 
-    connector = GoogleTrendsConnector()
-    keywords = ["paracetamol", "ibuprofen", "dafalgan", "probiotique", "antihistamine"]
-    countries = settings.SUPPORTED_COUNTRIES
-    languages = settings.SUPPORTED_LANGUAGES
+    keywords, countries, languages, skip = _resolve_collection_params(
+        search_topic_id, "google_trends",
+        ["paracetamol", "ibuprofen", "dafalgan", "probiotique", "antihistamine"],
+    )
+    if skip:
+        return {"status": "skipped", "reason": "source disabled for this topic"}
 
+    connector = GoogleTrendsConnector()
     raw = asyncio.get_event_loop().run_until_complete(
         connector.collect(keywords, countries, languages)
     )
@@ -178,9 +262,14 @@ def collect_reddit(self, search_topic_id: Optional[int] = None):
     if not connector.is_available():
         return {"status": "skipped", "reason": "Reddit credentials not configured"}
 
-    keywords = ["pharmacie", "médicament", "dafalgan", "paracetamol", "ibuprofen"]
+    keywords, countries, languages, skip = _resolve_collection_params(
+        search_topic_id, "reddit",
+        ["pharmacie", "médicament", "dafalgan", "paracetamol", "ibuprofen"],
+    )
+    if skip:
+        return {"status": "skipped", "reason": "source disabled for this topic"}
     raw = asyncio.get_event_loop().run_until_complete(
-        connector.collect(keywords, settings.SUPPORTED_COUNTRIES, settings.SUPPORTED_LANGUAGES)
+        connector.collect(keywords, countries, languages)
     )
     saved = _persist_mentions(raw, "reddit")
     logger.info("collect_reddit_done", saved=saved)
@@ -196,9 +285,14 @@ def collect_rss_news(self, search_topic_id: Optional[int] = None):
     import asyncio
 
     connector = RSSNewsConnector()
-    keywords = ["pharmacie", "médicament", "vaccin", "santé", "prescription"]
+    keywords, countries, languages, skip = _resolve_collection_params(
+        search_topic_id, "rss",
+        ["pharmacie", "médicament", "vaccin", "santé", "prescription"],
+    )
+    if skip:
+        return {"status": "skipped", "reason": "source disabled for this topic"}
     raw = asyncio.get_event_loop().run_until_complete(
-        connector.collect(keywords, settings.SUPPORTED_COUNTRIES, settings.SUPPORTED_LANGUAGES)
+        connector.collect(keywords, countries, languages)
     )
     saved = _persist_mentions(raw, "rss")
     logger.info("collect_rss_news_done", saved=saved)
@@ -214,9 +308,14 @@ def collect_forums(self, search_topic_id: Optional[int] = None):
     import asyncio
 
     connector = ForumScraperConnector()
-    keywords = ["médicament", "pharmacie", "allergie", "douleur", "digestion"]
+    keywords, countries, languages, skip = _resolve_collection_params(
+        search_topic_id, "forum",
+        ["médicament", "pharmacie", "allergie", "douleur", "digestion"],
+    )
+    if skip:
+        return {"status": "skipped", "reason": "source disabled for this topic"}
     raw = asyncio.get_event_loop().run_until_complete(
-        connector.collect(keywords, settings.SUPPORTED_COUNTRIES, settings.SUPPORTED_LANGUAGES)
+        connector.collect(keywords, countries, languages)
     )
     saved = _persist_mentions(raw, "forum")
     logger.info("collect_forums_done", saved=saved)
@@ -235,9 +334,14 @@ def collect_youtube(self, search_topic_id: Optional[int] = None):
     if not connector.is_available():
         return {"status": "skipped", "reason": "YOUTUBE_API_KEY not configured"}
 
-    keywords = ["pharmacie conseil", "médicament avis", "dafalgan review"]
+    keywords, countries, languages, skip = _resolve_collection_params(
+        search_topic_id, "youtube",
+        ["pharmacie conseil", "médicament avis", "dafalgan review"],
+    )
+    if skip:
+        return {"status": "skipped", "reason": "source disabled for this topic"}
     raw = asyncio.get_event_loop().run_until_complete(
-        connector.collect(keywords, settings.SUPPORTED_COUNTRIES, settings.SUPPORTED_LANGUAGES)
+        connector.collect(keywords, countries, languages)
     )
     saved = _persist_mentions(raw, "youtube")
     logger.info("collect_youtube_done", saved=saved)

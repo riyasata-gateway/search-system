@@ -58,6 +58,16 @@ def generate_recommendations(db: Session, pharmacy_id: int) -> int:
 
     max_trend_score = max(float(t.score) for t in trending_categories) or 1.0
 
+    # Resolve category names up front so reasons read for a pharmacist
+    # ("Allergy & Hay Fever is trending") instead of leaking a numeric id.
+    cat_ids = [t.entity_id for t in trending_categories]
+    category_names = {
+        c.id: c.name_en
+        for c in db.execute(
+            select(ProductCategory).where(ProductCategory.id.in_(cat_ids))
+        ).scalars().all()
+    }
+
     inventory_result = db.execute(
         select(PharmacyInventory.product_id)
         .where(PharmacyInventory.pharmacy_id == pharmacy_id, PharmacyInventory.in_stock == True)
@@ -78,6 +88,7 @@ def generate_recommendations(db: Session, pharmacy_id: int) -> int:
     saved = 0
     for trend in trending_categories:
         category_id = trend.entity_id
+        category_label = category_names.get(category_id, f"Category {category_id}")
         trend_score_norm = _normalise(float(trend.score), max_trend_score)
 
         products_in_category = db.execute(
@@ -118,9 +129,9 @@ def generate_recommendations(db: Session, pharmacy_id: int) -> int:
                     recommendation_type=RecommendationType.stock_missing,
                     action=RecommendationAction.add,
                     reason=(
-                        f"Category '{category_id}' is trending in {pharmacy.country} "
-                        f"(trend score: {float(trend.score):.1f}). "
-                        f"Product '{product.name}' is not currently stocked."
+                        f"{category_label} is trending in {pharmacy.country} "
+                        f"(demand score {float(trend.score):.1f}). "
+                        f"You don't currently stock {product.name} — consider adding it."
                     ),
                     external_trend_score=round(trend_score_norm, 4),
                     internal_sales_score=round(sales_score, 4),
@@ -155,8 +166,9 @@ def generate_recommendations(db: Session, pharmacy_id: int) -> int:
                         recommendation_type=RecommendationType.reorder_trending,
                         action=RecommendationAction.reorder,
                         reason=(
-                            f"'{product.name}' is stocked and trending +{float(trend.relative_change):.0f}% "
-                            f"in {pharmacy.country}. Consider reordering to avoid stockout."
+                            f"{product.name} ({category_label}) is stocked and demand is up "
+                            f"+{float(trend.relative_change):.0f}% in {pharmacy.country}. "
+                            f"Reorder soon to avoid a stockout."
                         ),
                         external_trend_score=round(trend_score_norm, 4),
                         internal_sales_score=round(sales_score, 4),

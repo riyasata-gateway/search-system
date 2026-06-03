@@ -38,32 +38,65 @@ logger = get_logger(__name__)
 _WEB_SEARCH_SUPPORTED = True
 
 
-async def _call_model(client, messages, allow_web_search: bool):
-    """Call the chat model, asking it to web-search when allowed & supported.
+def _extract_json(raw: str) -> dict:
+    """Parse the model's JSON answer. JSON mode can't be forced alongside web
+    search, so the web-search path may return the object wrapped in markdown
+    fences or trailing prose — try a plain parse first, then fall back to the
+    first balanced {...} block."""
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start != -1 and end > start:
+        try:
+            return json.loads(raw[start : end + 1])
+        except json.JSONDecodeError:
+            pass
+    return {}
 
-    If the model/deployment doesn't accept `web_search_options` (or it clashes
-    with JSON mode), we remember that and fall back to the plain JSON call — so
-    AI mode degrades to the model's own knowledge rather than erroring."""
+
+async def _call_model(client, messages, allow_web_search: bool) -> str:
+    """Call the model and return its raw text content, asking it to web-search
+    when allowed & supported.
+
+    Live web search is a built-in tool on the Responses API
+    (`tools=[{"type": "web_search"}]`) — the legacy Chat Completions
+    `web_search_options` only works on the `*-search-preview` models, so it 400s
+    on general models like ours. If the Responses call fails for any reason we
+    remember that and fall back to a plain JSON Chat Completions call, so AI mode
+    degrades to the model's own knowledge rather than erroring."""
     global _WEB_SEARCH_SUPPORTED
-    base = dict(
-        model=settings.OPENAI_MODEL,
-        messages=messages,
-        max_completion_tokens=900,
-        response_format={"type": "json_object"},
-    )
     if allow_web_search and settings.AI_WEB_SEARCH and _WEB_SEARCH_SUPPORTED:
         try:
-            return await asyncio.wait_for(
-                client.chat.completions.create(**base, web_search_options={}),
-                timeout=35.0,
+            # NB: the web_search tool is incompatible with forced JSON mode, so we
+            # don't set a `text` format here and instead rely on the system prompt's
+            # "respond ONLY with valid JSON" instruction + _extract_json() parsing.
+            response = await asyncio.wait_for(
+                client.responses.create(
+                    model=settings.OPENAI_MODEL,
+                    input=messages,
+                    tools=[{"type": "web_search"}],
+                ),
+                timeout=45.0,
             )
+            return response.output_text or "{}"
         except Exception as exc:
             _WEB_SEARCH_SUPPORTED = False
             logger.warning("ai_web_search_unsupported", error=str(exc))
-    return await asyncio.wait_for(
-        client.chat.completions.create(**base),
+    completion = await asyncio.wait_for(
+        client.chat.completions.create(
+            model=settings.OPENAI_MODEL,
+            messages=messages,
+            max_completion_tokens=900,
+            response_format={"type": "json_object"},
+        ),
         timeout=25.0,
     )
+    return completion.choices[0].message.content or "{}"
 
 # `sentiment_summary` stays in English so the frontend badge styling keeps working;
 # narrative fields (answer, key_points, disclaimer) are rendered in the user's locale.
@@ -178,7 +211,7 @@ async def _synthesise(
     user_message = f'Analyse this pharmaceutical query: "{query}"{expansion_note}'
 
     try:
-        completion = await _call_model(
+        raw = await _call_model(
             client,
             messages=[
                 {"role": "system", "content": _build_system_prompt(lang, role)},
@@ -192,11 +225,7 @@ async def _synthesise(
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"AI model error: {str(exc)}")
 
-    raw = completion.choices[0].message.content or "{}"
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        parsed = {}
+    parsed = _extract_json(raw)
 
     # Surface the references the model itself cited (from its own knowledge / web
     # search) as the source cards.

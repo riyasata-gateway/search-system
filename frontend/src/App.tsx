@@ -65,7 +65,7 @@ export default function App() {
           <Route
             path="setup"
             element={
-              <ProtectedRoute>
+              <ProtectedRoute roles={["marketing", "brand_manager", "admin"]}>
                 <BrandSetup />
               </ProtectedRoute>
             }
@@ -81,7 +81,7 @@ export default function App() {
           <Route
             path="adverse-events"
             element={
-              <ProtectedRoute>
+              <ProtectedRoute roles={["pharmacist", "admin"]}>
                 <AdverseEventReview />
               </ProtectedRoute>
             }

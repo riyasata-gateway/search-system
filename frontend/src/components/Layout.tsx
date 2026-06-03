@@ -52,7 +52,7 @@ const navItems = [
   { to: "/analytics",      label: "Analytics",       icon: BarChart3,       roles: ALL_ROLES },
   { to: "/setup",          label: "Brand Setup",     icon: Settings,        roles: LAB_ROLES },
   { to: "/alerts",         label: "Alerts",          icon: Bell,            roles: ALL_ROLES },
-  { to: "/adverse-events", label: "Adverse Events",  icon: ShieldAlert,     roles: ALL_ROLES },
+  { to: "/adverse-events", label: "Adverse Events",  icon: ShieldAlert,     roles: ["pharmacist", "admin"] },
   { to: "/admin",          label: "Admin",           icon: Users,           roles: ["admin"] },
 ];
 

@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     # ── Qdrant ───────────────────────────────────────────────────────────────
     QDRANT_URL: str = "http://localhost:6333"
     QDRANT_COLLECTION: str = "pharmawatch_mentions"
+    # Embedded fallback: when the Qdrant server at QDRANT_URL is unreachable
+    # (e.g. Docker not running), the client falls back to an on-disk embedded
+    # Qdrant store at this path so vectors are still persisted in Qdrant format.
+    QDRANT_PATH: str = "data/qdrant_local"
 
     # ── LLM ──────────────────────────────────────────────────────────────────
     OLLAMA_BASE_URL: str = "http://localhost:11434"

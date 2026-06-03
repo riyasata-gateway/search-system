@@ -1,3 +1,4 @@
+import asyncio
 from datetime import date
 from typing import Optional
 
@@ -112,17 +113,42 @@ async def generate_weekly_summary(
 
 
 async def _call_ollama(prompt: str) -> str:
+    """Generate the summary. Prefer the self-hosted Ollama model (keeps the
+    aggregated context in-region); if Ollama is down or unconfigured, fall back
+    to the configured OpenAI model so the summary still renders. Only aggregated,
+    non-personal counts are sent to either backend."""
+    # 1) Self-hosted Ollama first. Run the sync client off the event loop.
     try:
         import ollama as ollama_client
-        response = ollama_client.generate(
+        response = await asyncio.to_thread(
+            ollama_client.generate,
             model=settings.OLLAMA_MODEL,
             prompt=prompt,
             options={"temperature": 0.3, "num_predict": 300},
         )
-        return response.get("response", "Summary unavailable.").strip()
+        text = (response.get("response") or "").strip()
+        if text:
+            return text
     except Exception as exc:
         logger.warning("ollama_generate_failed", error=str(exc))
-        return (
-            "LLM summary unavailable. Please check Ollama service configuration. "
-            f"Raw data: {len(prompt)} chars of context."
-        )
+
+    # 2) Fallback: OpenAI (already used by AI search). Aggregated counts only.
+    if settings.OPENAI_API_KEY:
+        try:
+            from openai import AsyncOpenAI
+            client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+            completion = await client.chat.completions.create(
+                model=settings.OPENAI_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                max_completion_tokens=300,
+            )
+            text = (completion.choices[0].message.content or "").strip()
+            if text:
+                return text
+        except Exception as exc:
+            logger.warning("openai_summary_failed", error=str(exc))
+
+    return (
+        "LLM summary unavailable: neither the self-hosted Ollama service nor the "
+        "OpenAI fallback could be reached. Check OLLAMA_MODEL / OPENAI_API_KEY."
+    )

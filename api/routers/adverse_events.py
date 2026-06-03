@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.dependencies import get_current_user, write_audit_log
+from api.dependencies import get_current_user, require_pharmacist, write_audit_log
 from core.config import settings
 from core.database import get_db
 from models.adverse_event import AdverseEventCandidate, AdverseEventReviewStatus
@@ -67,7 +67,8 @@ async def list_adverse_events(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    # Pharmacovigilance review is a regulated clinical function → pharmacist + admin only.
+    current_user: User = Depends(require_pharmacist),
 ):
     q = select(AdverseEventCandidate)
     if review_status:
@@ -154,7 +155,8 @@ async def review_adverse_event(
     candidate_id: int,
     body: ReviewUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    # Only a qualified pharmacovigilance reviewer (pharmacist/admin) may adjudicate.
+    current_user: User = Depends(require_pharmacist),
 ):
     """
     Human reviewer updates the status. System NEVER makes the final call —

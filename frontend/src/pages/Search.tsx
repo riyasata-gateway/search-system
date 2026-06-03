@@ -493,7 +493,7 @@ function FrameworkPanel({ framework, brandName }: { framework: FrameworkMetrics;
   const bundles = order.filter((k) => framework.bundles[k]).map((k) => [k, framework.bundles[k]] as const);
   if (!bundles.length) return null;
   return (
-    <div className="rounded-xl border border-violet-200 bg-gradient-to-br from-violet-50/70 to-white p-3.5 shadow-soft">
+    <div className="rounded-xl border border-violet-200 bg-gradient-to-br from-violet-500/10 to-transparent p-3.5 shadow-soft">
       <p className="text-[11px] font-semibold uppercase tracking-wider text-violet-700 mb-2.5 flex items-center gap-1.5">
         <Briefcase size={12} /> DIA brand intelligence · <span className="text-violet-900">{brandName}</span>
         <span className="ml-1 normal-case text-[10px] text-violet-400 font-normal">corpus-based · the searched brand</span>
@@ -571,6 +571,8 @@ function InsightPanel({ intel }: { intel: SearchIntelligence }) {
                   <Tooltip
                     formatter={(v: number, n: string) => [`${v} mention${v === 1 ? "" : "s"}`, n]}
                     contentStyle={{ fontSize: 11, padding: "6px 10px", borderRadius: 8, border: "1px solid #e2e8f0", boxShadow: "0 4px 12px rgba(15,23,42,0.08)" }}
+                    itemStyle={{ color: "#e2e8f0" }}
+                    labelStyle={{ color: "#e2e8f0" }}
                   />
                 </PieChart>
               </ResponsiveContainer>
@@ -747,7 +749,7 @@ function YouTubeAnalyticsPanel({ results }: { results: LiveResult[] }) {
     .slice(0, 5);
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-rose-50/40 via-white to-white shadow-soft overflow-hidden">
+    <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-rose-500/10 via-transparent to-transparent shadow-soft overflow-hidden">
       <div className="flex items-center gap-2.5 px-4 py-3 border-b border-slate-100">
         <span className="shrink-0 w-8 h-8 rounded-lg bg-gradient-to-br from-red-500 to-rose-600 flex items-center justify-center shadow-soft">
           <Youtube size={16} className="text-white" />
@@ -1064,7 +1066,7 @@ function AIModePanel({ role }: { role: Role }) {
       {/* Loading — pulse + skeleton answer */}
       {isFetching && (
         <div className="space-y-4">
-          <div className="relative bg-gradient-to-br from-accent-50 via-white to-accent-50/40 border border-accent-100 rounded-2xl p-5 flex items-start gap-4 overflow-hidden">
+          <div className="relative bg-gradient-to-br from-accent-500/10 via-transparent to-accent-500/5 border border-accent-100 rounded-2xl p-5 flex items-start gap-4 overflow-hidden">
             <span className="absolute inset-x-0 top-0 h-0.5 bg-gradient-to-r from-accent-400 via-accent-500 to-brand-400 animate-pulse" />
             <div className="relative shrink-0 mt-0.5">
               <Loader2 size={22} className="animate-spin text-accent-600" />
@@ -1354,7 +1356,7 @@ function LiveSearchPanel({ role }: { role: Role }) {
 
       {isFetching && (
         <div className="space-y-3">
-          <div className="relative bg-gradient-to-br from-brand-50 via-white to-brand-50/40 border border-brand-100 rounded-2xl p-4 flex items-center gap-3 overflow-hidden">
+          <div className="relative bg-gradient-to-br from-brand-500/10 via-transparent to-brand-500/5 border border-brand-100 rounded-2xl p-4 flex items-center gap-3 overflow-hidden">
             <span className="absolute inset-x-0 top-0 h-0.5 bg-gradient-to-r from-brand-400 via-brand-500 to-accent-400 animate-pulse" />
             <Loader2 size={20} className="animate-spin text-brand-600 shrink-0" />
             <div className="flex-1 min-w-0">

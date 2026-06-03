@@ -63,12 +63,15 @@ def process_mention_alerts(db: Session, mention_id: str, classification: dict) -
     if is_ae:
         _handle_adverse_event(db, mention_id, classification)
 
+    # NB: keep the raw mention id out of the user-facing `description` — it's an
+    # internal UUID, not something a pharmacist should read. It stays in `payload`
+    # for traceability / drill-through.
     if risk_type == "shortage":
         create_alert(
             db,
             alert_type=AlertType.shortage,
             severity=AlertSeverity.high,
-            description=f"Possible product shortage mentioned — mention {mention_id}",
+            description="Possible product shortage signalled in a monitored mention.",
             payload={"mention_id": mention_id},
         )
 
@@ -77,7 +80,7 @@ def process_mention_alerts(db: Session, mention_id: str, classification: dict) -
             db,
             alert_type=AlertType.misinformation,
             severity=AlertSeverity.medium,
-            description=f"Possible misinformation detected — mention {mention_id}",
+            description="Possible health misinformation detected in a monitored mention.",
             payload={"mention_id": mention_id},
         )
 
@@ -86,7 +89,7 @@ def process_mention_alerts(db: Session, mention_id: str, classification: dict) -
             db,
             alert_type=AlertType.prescription_promotion,
             severity=AlertSeverity.high,
-            description=f"Possible prescription medicine promotion — mention {mention_id}. Human review required.",
+            description="Possible prescription-medicine promotion detected. Human review required.",
             payload={"mention_id": mention_id},
         )
 
@@ -115,7 +118,7 @@ def _handle_adverse_event(db: Session, mention_id: str, classification: dict) ->
         db,
         alert_type=AlertType.adverse_event,
         severity=AlertSeverity.critical,
-        description=f"Adverse event candidate detected — mention {mention_id}. Requires human pharmacovigilance review.",
+        description="Adverse event candidate detected. Requires human pharmacovigilance review.",
         payload={"mention_id": mention_id, "candidate_id": candidate.id},
     )
 

@@ -15,6 +15,16 @@ from models.user import User, UserRole
 router = APIRouter()
 
 
+def _enum_val(x):
+    """Return the clean string value of a (str) Enum member.
+
+    The sentiment/topic columns are `str`-enum backed, so the raw member would
+    serialize via `str(enum)` → e.g. "Sentiment.neutral" / "Topic.general",
+    which breaks the frontend colour lookups and shows ugly chart labels. We
+    want the bare value ("neutral", "general")."""
+    return x.value if hasattr(x, "value") else x
+
+
 async def _owned_brand_ids(db: AsyncSession, current_user: User):
     """The set of brand ids a user may view, or None meaning 'all brands'.
 
@@ -211,7 +221,7 @@ async def lab_dashboard(
         .where(MentionClassification.mention_id.in_(mention_ids))
         .group_by(MentionClassification.sentiment)
     )
-    sentiment_breakdown = {row.sentiment: row.cnt for row in sentiment_q.fetchall() if row.sentiment}
+    sentiment_breakdown = {_enum_val(row.sentiment): row.cnt for row in sentiment_q.fetchall() if row.sentiment}
 
     topic_q = await db.execute(
         select(MentionClassification.topic, func.count().label("cnt"))
@@ -223,7 +233,7 @@ async def lab_dashboard(
     topic_rows = topic_q.fetchall()
     total_topic = sum(r.cnt for r in topic_rows) or 1
     top_topics = [
-        TopicBreakdownItem(topic=r.topic, count=r.cnt, percent=round((r.cnt / total_topic) * 100, 2))
+        TopicBreakdownItem(topic=_enum_val(r.topic), count=r.cnt, percent=round((r.cnt / total_topic) * 100, 2))
         for r in topic_rows
         if r.topic
     ]
@@ -399,7 +409,7 @@ async def sentiment_breakdown(
     rows = q.fetchall()
     total = sum(r.cnt for r in rows) or 1
     return [
-        TopicBreakdownItem(topic=str(r.sentiment), count=r.cnt, percent=round((r.cnt / total) * 100, 2))
+        TopicBreakdownItem(topic=_enum_val(r.sentiment), count=r.cnt, percent=round((r.cnt / total) * 100, 2))
         for r in rows
         if r.sentiment
     ]
@@ -434,7 +444,7 @@ async def topic_clusters(
     rows = q.fetchall()
     total = sum(r.cnt for r in rows) or 1
     return [
-        TopicBreakdownItem(topic=str(r.topic), count=r.cnt, percent=round((r.cnt / total) * 100, 2))
+        TopicBreakdownItem(topic=_enum_val(r.topic), count=r.cnt, percent=round((r.cnt / total) * 100, 2))
         for r in rows
         if r.topic
     ]

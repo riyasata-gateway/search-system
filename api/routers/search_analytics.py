@@ -23,12 +23,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
-from sqlalchemy import Date, Integer, cast, distinct, func, select
+from sqlalchemy import Date, Integer, case, cast, distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.dependencies import get_current_user
+from core.config import settings
 from core.database import get_db
-from core.role_lens import ADMIN, ROLE_LABELS, VALID_ROLES
+from core.role_lens import ADMIN, ROLE_FOCUS, ROLE_LABELS, VALID_ROLES
+from models.mention import Mention, MentionClassification, Sentiment
 from models.search_audit import SearchMode, SearchQuery, SearchResult
 from models.user import User, UserRole
 
@@ -380,3 +382,407 @@ async def role_usage(
         ))
     items.sort(key=lambda x: x.total_searches, reverse=True)
     return items
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# REVIEW SENTIMENT ANALYTICS
+#
+# Aggregates the imported pharmacy product-review corpus (farmaline + medimarket)
+# rather than the search-audit log. The review corpus is **shared** across roles
+# (everyone analyses the same reviews) — so unlike /dashboard, `role` here selects
+# the *metric lens*, not a data filter. Non-admins get their own lens; admins can
+# pick any via `?role=`. Sentiment is rating-derived; topic / adverse-event facets
+# come from the LLM enrichment pass on the non-positive subset.
+# ════════════════════════════════════════════════════════════════════════════
+
+REVIEW_SOURCES = ("farmaline", "medimarket")
+
+
+class KpiCardModel(BaseModel):
+    label: str
+    value: str
+    sub: Optional[str] = None
+    tone: Optional[str] = None  # "ok" | "warn" | "danger"
+
+
+class ReviewTimelinePoint(BaseModel):
+    date: str            # YYYY-MM (monthly bucket)
+    reviews: int
+    positive: int
+    neutral: int
+    negative: int
+
+
+class BrandRow(BaseModel):
+    brand: str
+    reviews: int
+    avg_rating: float
+    positive: int
+    neutral: int
+    negative: int
+    sov_percent: float
+    momentum: Optional[str] = None  # "up" | "down" | "flat" | null
+
+
+class ProductRow(BaseModel):
+    product: str
+    brand: Optional[str]
+    reviews: int
+    avg_rating: float
+    neg_share: float
+
+
+class TriageItem(BaseModel):
+    text: str
+    rating: Optional[int]
+    brand: Optional[str]
+    product: Optional[str]
+    language: Optional[str]
+    published_at: Optional[datetime]
+    is_adverse_event: bool
+
+
+class LangSentiment(BaseModel):
+    language: str
+    positive: int
+    neutral: int
+    negative: int
+
+
+class ReviewAnalytics(BaseModel):
+    scope: str
+    scope_label: str
+    lens: str                         # role focus description
+    period: str
+    generated_at: datetime
+    sections: List[str]               # ordered block keys the frontend renders for this role
+    kpis: List[KpiCardModel]          # role-tailored KPI cards
+    sentiment: List[Slice]
+    timeline: List[ReviewTimelinePoint]
+    sources: List[Slice]
+    languages: List[Slice]
+    brands: List[BrandRow]
+    topics: List[Slice]
+    products: List[ProductRow]        # worst-sentiment products (pharmacist)
+    triage: List[TriageItem]          # low-rated recent reviews (pharmacist)
+    lang_sentiment: List[LangSentiment]
+    total_reviews: int
+    avg_rating: float
+    enriched_reviews: int             # reviews with LLM topic/AE facets
+    embedded_reviews: int             # reviews vectorised into Qdrant
+
+
+# Which blocks each persona sees, in order. Everyone gets the headline KPIs +
+# sentiment; the rest is the role lens.
+_ROLE_SECTIONS: Dict[str, List[str]] = {
+    "pharmacist":    ["sentiment", "triage", "products", "topics", "timeline"],
+    "marketing":     ["sentiment", "timeline", "brands", "topics", "lang_sentiment"],
+    "brand_manager": ["sentiment", "brands", "timeline", "topics"],
+    "admin":         ["sentiment", "timeline", "sources", "brands", "topics", "products", "lang_sentiment"],
+}
+
+
+def _pct(n: int, d: int) -> float:
+    return round(100.0 * n / d, 1) if d else 0.0
+
+
+@router.get("/reviews", response_model=ReviewAnalytics)
+async def review_analytics(
+    role: Optional[str] = Query(None, description="Metric lens (admins only); pharmacist/marketing/brand_manager/admin"),
+    period: str = Query("all", description="7d | 30d | 90d | 180d | 365d | all (reviews are historical → 'all' default)"),
+    product: Optional[str] = Query(None, description="Scope the whole dashboard to one product (exact, case-insensitive)"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    role_filter, scope_label = _resolve_scope(current_user, role)
+    lens_key = role_filter or ADMIN  # admin "all" view uses the admin lens
+    start = _period_start(period)
+
+    base_conds = [Mention.source_type.in_(REVIEW_SOURCES), Mention.is_deleted.is_(False)]
+    if start is not None:
+        base_conds.append(Mention.published_at >= start)
+    if product and product.strip():
+        base_conds.append(func.lower(Mention.product_name) == product.strip().lower())
+
+    # ── headline totals ──────────────────────────────────────────────────────
+    tot_row = (await db.execute(
+        select(func.count(Mention.id), func.coalesce(func.avg(Mention.rating), 0))
+        .where(*base_conds)
+    )).one()
+    total_reviews = int(tot_row[0] or 0)
+    avg_rating = round(float(tot_row[1] or 0), 2)
+
+    # ── sentiment split (rating-derived) ──────────────────────────────────────
+    sent_rows = (await db.execute(
+        select(MentionClassification.sentiment, func.count(Mention.id))
+        .join(MentionClassification, MentionClassification.mention_id == Mention.id)
+        .where(*base_conds)
+        .group_by(MentionClassification.sentiment)
+    )).all()
+    sent_map = {(s.value if hasattr(s, "value") else str(s)): int(c) for s, c in sent_rows if s is not None}
+    pos, neu, neg = sent_map.get("positive", 0), sent_map.get("neutral", 0), sent_map.get("negative", 0)
+    sentiment = [Slice(label=k, count=v) for k, v in (("positive", pos), ("neutral", neu), ("negative", neg)) if v]
+
+    # ── monthly timeline ──────────────────────────────────────────────────────
+    month = func.to_char(func.date_trunc("month", Mention.published_at), "YYYY-MM")
+    tl_rows = (await db.execute(
+        select(month.label("m"), MentionClassification.sentiment, func.count(Mention.id))
+        .join(MentionClassification, MentionClassification.mention_id == Mention.id)
+        .where(*base_conds, Mention.published_at.isnot(None))
+        .group_by("m", MentionClassification.sentiment).order_by("m")
+    )).all()
+    tl: Dict[str, Dict[str, int]] = {}
+    for m, s, c in tl_rows:
+        if not m:
+            continue
+        b = tl.setdefault(m, {"reviews": 0, "positive": 0, "neutral": 0, "negative": 0})
+        sval = s.value if hasattr(s, "value") else str(s)
+        b["reviews"] += int(c)
+        if sval in b:
+            b[sval] = int(c)
+    # keep the last 60 months so the chart stays readable
+    timeline = [ReviewTimelinePoint(date=k, **v) for k, v in sorted(tl.items())][-60:]
+
+    # ── source & language splits ──────────────────────────────────────────────
+    src_rows = (await db.execute(
+        select(Mention.source_type, func.count(Mention.id)).where(*base_conds)
+        .group_by(Mention.source_type).order_by(func.count(Mention.id).desc())
+    )).all()
+    sources = [Slice(label=str(s), count=int(c)) for s, c in src_rows]
+    lang_rows = (await db.execute(
+        select(Mention.language, func.count(Mention.id)).where(*base_conds)
+        .group_by(Mention.language).order_by(func.count(Mention.id).desc())
+    )).all()
+    languages = [Slice(label=str(l or "?"), count=int(c)) for l, c in lang_rows]
+
+    # ── per-brand performance (avg rating, sentiment split, SoV, momentum) ────
+    pos_c = func.sum(case((MentionClassification.sentiment == Sentiment.positive, 1), else_=0))
+    neu_c = func.sum(case((MentionClassification.sentiment == Sentiment.neutral, 1), else_=0))
+    neg_c = func.sum(case((MentionClassification.sentiment == Sentiment.negative, 1), else_=0))
+    brand_rows = (await db.execute(
+        select(
+            Mention.brand_name,
+            func.count(Mention.id),
+            func.coalesce(func.avg(Mention.rating), 0),
+            pos_c, neu_c, neg_c,
+        )
+        .join(MentionClassification, MentionClassification.mention_id == Mention.id)
+        .where(*base_conds, Mention.brand_name.isnot(None))
+        .group_by(Mention.brand_name)
+        .order_by(func.count(Mention.id).desc())
+        .limit(20)
+    )).all()
+
+    # momentum: avg rating in the last 365d vs the prior 365d, per brand
+    now = datetime.now(timezone.utc)
+    recent_start, prior_start = now - timedelta(days=365), now - timedelta(days=730)
+    mom_rows = (await db.execute(
+        select(
+            Mention.brand_name,
+            func.avg(case((Mention.published_at >= recent_start, Mention.rating))),
+            func.avg(case((
+                (Mention.published_at >= prior_start) & (Mention.published_at < recent_start),
+                Mention.rating))),
+        )
+        .where(*base_conds, Mention.brand_name.isnot(None), Mention.published_at.isnot(None))
+        .group_by(Mention.brand_name)
+    )).all()
+    mom_map: Dict[str, Optional[str]] = {}
+    for b, rec, pri in mom_rows:
+        if rec is None or pri is None:
+            mom_map[b] = None
+        else:
+            d = float(rec) - float(pri)
+            mom_map[b] = "up" if d > 0.15 else "down" if d < -0.15 else "flat"
+
+    brands = [
+        BrandRow(
+            brand=b or "?", reviews=int(cnt), avg_rating=round(float(ar or 0), 2),
+            positive=int(p or 0), neutral=int(n or 0), negative=int(g or 0),
+            sov_percent=_pct(int(cnt), total_reviews), momentum=mom_map.get(b),
+        )
+        for b, cnt, ar, p, n, g in brand_rows
+    ]
+
+    # ── topic mix (from LLM enrichment) ───────────────────────────────────────
+    topic_rows = (await db.execute(
+        select(MentionClassification.topic, func.count(Mention.id))
+        .join(MentionClassification, MentionClassification.mention_id == Mention.id)
+        .where(*base_conds, MentionClassification.topic.isnot(None))
+        .group_by(MentionClassification.topic).order_by(func.count(Mention.id).desc())
+    )).all()
+    topics = [Slice(label=(t.value if hasattr(t, "value") else str(t)), count=int(c)) for t, c in topic_rows]
+
+    # ── product ratings grid — most-reviewed products (min 3), sorted client-side
+    prod_rows = (await db.execute(
+        select(
+            Mention.product_name, Mention.brand_name,
+            func.count(Mention.id), func.coalesce(func.avg(Mention.rating), 0), neg_c,
+        )
+        .join(MentionClassification, MentionClassification.mention_id == Mention.id)
+        .where(*base_conds, Mention.product_name.isnot(None))
+        .group_by(Mention.product_name, Mention.brand_name)
+        .having(func.count(Mention.id) >= 3)
+        .order_by(func.count(Mention.id).desc())
+        .limit(150)
+    )).all()
+    products = [
+        ProductRow(product=p, brand=b, reviews=int(cnt), avg_rating=round(float(ar or 0), 2),
+                   neg_share=_pct(int(g or 0), int(cnt)))
+        for p, b, cnt, ar, g in prod_rows
+    ]
+
+    # ── triage queue (pharmacist): recent low-rated / AE-flagged reviews ──────
+    triage_rows = (await db.execute(
+        select(
+            Mention.clean_text, Mention.rating, Mention.brand_name, Mention.product_name,
+            Mention.language, Mention.published_at, MentionClassification.is_adverse_event_candidate,
+        )
+        .join(MentionClassification, MentionClassification.mention_id == Mention.id)
+        .where(*base_conds, Mention.rating <= 2)
+        .order_by(MentionClassification.is_adverse_event_candidate.desc(),
+                  Mention.published_at.desc().nullslast())
+        .limit(25)
+    )).all()
+    triage = [
+        TriageItem(text=(t or "")[:300], rating=r, brand=b, product=p, language=lg,
+                   published_at=pa, is_adverse_event=bool(ae))
+        for t, r, b, p, lg, pa, ae in triage_rows
+    ]
+
+    # ── nl-vs-fr sentiment (marketing) ────────────────────────────────────────
+    ls_rows = (await db.execute(
+        select(Mention.language, MentionClassification.sentiment, func.count(Mention.id))
+        .join(MentionClassification, MentionClassification.mention_id == Mention.id)
+        .where(*base_conds, Mention.language.isnot(None))
+        .group_by(Mention.language, MentionClassification.sentiment)
+    )).all()
+    ls: Dict[str, Dict[str, int]] = {}
+    for lg, s, c in ls_rows:
+        b = ls.setdefault(lg, {"positive": 0, "neutral": 0, "negative": 0})
+        sval = s.value if hasattr(s, "value") else str(s)
+        if sval in b:
+            b[sval] = int(c)
+    lang_sentiment = sorted(
+        [LangSentiment(language=k, **v) for k, v in ls.items()],
+        key=lambda x: -(x.positive + x.neutral + x.negative),
+    )[:6]
+
+    # ── enrichment / embedding coverage ───────────────────────────────────────
+    enriched = int((await db.execute(
+        select(func.count(Mention.id))
+        .join(MentionClassification, MentionClassification.mention_id == Mention.id)
+        .where(*base_conds, MentionClassification.model_name == settings.OPENAI_MODEL)
+    )).scalar() or 0)
+    embedded = int((await db.execute(
+        select(func.count(Mention.id)).where(*base_conds, Mention.qdrant_point_id.isnot(None))
+    )).scalar() or 0)
+
+    ae_count = int((await db.execute(
+        select(func.count(Mention.id))
+        .join(MentionClassification, MentionClassification.mention_id == Mention.id)
+        .where(*base_conds, MentionClassification.is_adverse_event_candidate.is_(True))
+    )).scalar() or 0)
+
+    # ── role-tailored KPI cards ───────────────────────────────────────────────
+    nps = round(_pct(pos, total_reviews) - _pct(neg, total_reviews), 1)
+    common = [
+        KpiCardModel(label="Reviews", value=f"{total_reviews:,}"),
+        KpiCardModel(label="Avg rating", value=f"{avg_rating:.2f}", sub="out of 5"),
+    ]
+    if lens_key == "pharmacist":
+        kpis = common + [
+            KpiCardModel(label="Negative", value=f"{_pct(neg, total_reviews)}%",
+                         sub=f"{neg:,} reviews", tone="danger" if _pct(neg, total_reviews) > 10 else "warn"),
+            KpiCardModel(label="Adverse-event flags", value=f"{ae_count:,}",
+                         sub="LLM-detected", tone="danger" if ae_count else None),
+            KpiCardModel(label="Low-rated (1–2★)", value=f"{len(triage_rows):,}+", sub="triage queue"),
+        ]
+    elif lens_key == "marketing":
+        kpis = common + [
+            KpiCardModel(label="Positive", value=f"{_pct(pos, total_reviews)}%", sub=f"{pos:,} reviews", tone="ok"),
+            KpiCardModel(label="Net sentiment (NPS-style)", value=f"{nps:+.0f}",
+                         sub="% positive − % negative", tone="ok" if nps > 0 else "warn"),
+            KpiCardModel(label="Brands tracked", value=f"{len(brands):,}+"),
+        ]
+    elif lens_key == "brand_manager":
+        top_brand = brands[0].brand if brands else "—"
+        kpis = common + [
+            KpiCardModel(label="Top brand by volume", value=top_brand,
+                         sub=f"{brands[0].sov_percent}% SoV" if brands else None),
+            KpiCardModel(label="Positive", value=f"{_pct(pos, total_reviews)}%", tone="ok"),
+            KpiCardModel(label="Negative", value=f"{_pct(neg, total_reviews)}%",
+                         tone="danger" if _pct(neg, total_reviews) > 10 else None),
+        ]
+    else:  # admin
+        kpis = common + [
+            KpiCardModel(label="Positive", value=f"{_pct(pos, total_reviews)}%", tone="ok"),
+            KpiCardModel(label="Negative", value=f"{_pct(neg, total_reviews)}%"),
+            KpiCardModel(label="LLM-enriched", value=f"{_pct(enriched, total_reviews)}%", sub=f"{enriched:,} reviews"),
+            KpiCardModel(label="In Qdrant", value=f"{_pct(embedded, total_reviews)}%", sub=f"{embedded:,} vectors"),
+        ]
+
+    return ReviewAnalytics(
+        scope=role_filter or "all",
+        scope_label=scope_label,
+        lens=ROLE_FOCUS.get(lens_key, ""),
+        period=period,
+        generated_at=now,
+        sections=_ROLE_SECTIONS.get(lens_key, _ROLE_SECTIONS["admin"]),
+        kpis=kpis,
+        sentiment=sentiment,
+        timeline=timeline,
+        sources=sources,
+        languages=languages,
+        brands=brands,
+        topics=topics,
+        products=products,
+        triage=triage,
+        lang_sentiment=lang_sentiment,
+        total_reviews=total_reviews,
+        avg_rating=avg_rating,
+        enriched_reviews=enriched,
+        embedded_reviews=embedded,
+    )
+
+
+class ProductSuggestion(BaseModel):
+    product: str
+    brand: Optional[str]
+    reviews: int
+    avg_rating: float
+
+
+@router.get("/reviews/products", response_model=List[ProductSuggestion])
+async def review_product_suggest(
+    q: str = Query("", description="Product-name search fragment (case-insensitive, matches anywhere)"),
+    limit: int = Query(10, ge=1, le=25),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Typeahead suggestions for the Reviews product search — distinct product names
+    matching `q`, ranked by review volume."""
+    q = (q or "").strip()
+    if len(q) < 2:
+        return []
+    rows = (await db.execute(
+        select(
+            Mention.product_name,
+            func.max(Mention.brand_name),
+            func.count(Mention.id),
+            func.coalesce(func.avg(Mention.rating), 0),
+        )
+        .where(
+            Mention.source_type.in_(REVIEW_SOURCES),
+            Mention.is_deleted.is_(False),
+            Mention.product_name.isnot(None),
+            Mention.product_name.ilike(f"%{q}%"),
+        )
+        .group_by(Mention.product_name)
+        .order_by(func.count(Mention.id).desc())
+        .limit(limit)
+    )).all()
+    return [
+        ProductSuggestion(product=p, brand=b, reviews=int(c), avg_rating=round(float(ar or 0), 2))
+        for p, b, c, ar in rows
+    ]

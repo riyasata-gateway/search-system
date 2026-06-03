@@ -111,6 +111,69 @@ body {
 .surface-app .from-blue-50.to-indigo-50,
 .surface-app .border-blue-100 { border-color: rgba(91,134,255,0.22) !important; }
 
+/* ── Remaining light pastel fills the ramp above missed. The block above only
+   recoloured the -100 variants; the -50 fills (and brand/indigo tints) stayed
+   light, so any recoloured text on them turned invisible — e.g. a light
+   `text-red-700` on a still-light `bg-red-50`. Map every leftover pastel fill,
+   text tint and border to the dark scheme so nothing reads light-on-light. */
+.surface-app .bg-red-50     { background-color: rgba(239,68,68,0.13) !important; }
+.surface-app .bg-green-50   { background-color: rgba(34,197,94,0.13) !important; }
+.surface-app .bg-yellow-50,
+.surface-app .bg-yellow-100 { background-color: rgba(245,158,11,0.15) !important; }
+.surface-app .bg-indigo-50,
+.surface-app .bg-brand-50   { background-color: rgba(91,134,255,0.13) !important; }
+.surface-app .bg-indigo-100,
+.surface-app .bg-brand-100  { background-color: rgba(91,134,255,0.18) !important; }
+
+/* Matching text tints (dark pastel text → light neon so it reads on dark) */
+.surface-app .text-yellow-800, .surface-app .text-yellow-700,
+.surface-app .text-yellow-600, .surface-app .text-yellow-500,
+.surface-app .text-amber-600,  .surface-app .text-amber-500  { color: #fbbf24 !important; }
+.surface-app .text-indigo-800, .surface-app .text-indigo-700, .surface-app .text-indigo-600,
+.surface-app .text-brand-800,  .surface-app .text-brand-700,  .surface-app .text-brand-600, .surface-app .text-brand-500,
+.surface-app .text-blue-800,   .surface-app .text-blue-500,   .surface-app .text-blue-400 { color: #8aa6ff !important; }
+.surface-app .text-green-800,  .surface-app .text-green-500,
+.surface-app .text-emerald-600, .surface-app .text-emerald-500 { color: #4ade80 !important; }
+.surface-app .text-red-800,    .surface-app .text-red-900     { color: #fb7185 !important; }
+.surface-app .text-purple-800, .surface-app .text-purple-500  { color: #c4b1ff !important; }
+
+/* Coloured pastel borders (-200/-300) → subtle tinted strokes */
+.surface-app .border-red-200    { border-color: rgba(239,68,68,0.30) !important; }
+.surface-app .border-green-200, .surface-app .border-emerald-200 { border-color: rgba(34,197,94,0.30) !important; }
+.surface-app .border-yellow-200, .surface-app .border-amber-200  { border-color: rgba(245,158,11,0.30) !important; }
+.surface-app .border-indigo-100, .surface-app .border-indigo-200,
+.surface-app .border-indigo-300, .surface-app .border-indigo-400,
+.surface-app .border-brand-200,  .surface-app .border-brand-300,
+.surface-app .border-blue-200   { border-color: rgba(91,134,255,0.30) !important; }
+.surface-app .border-purple-200 { border-color: rgba(164,134,255,0.30) !important; }
+
+/* Hover fills/borders for the same pastels */
+.surface-app .hover\:bg-green-50:hover   { background-color: rgba(34,197,94,0.14) !important; }
+.surface-app .hover\:bg-indigo-100:hover { background-color: rgba(91,134,255,0.20) !important; }
+.surface-app .hover\:bg-brand-50:hover   { background-color: rgba(91,134,255,0.16) !important; }
+.surface-app .hover\:border-indigo-300:hover,
+.surface-app .hover\:border-indigo-400:hover,
+.surface-app .hover\:border-brand-300:hover { border-color: rgba(91,134,255,0.45) !important; }
+
+/* Orange / sky / violet families (e.g. Alerts "high" severity = bg-orange-50)
+   weren't in any ramp above, so they rendered as bright light boxes on the
+   dark canvas. Map them too. Solid saturated fills (violet-600/700 buttons)
+   are intentionally left alone. */
+.surface-app .bg-orange-50    { background-color: rgba(249,115,22,0.13) !important; }
+.surface-app .bg-orange-100   { background-color: rgba(249,115,22,0.18) !important; }
+.surface-app .text-orange-800, .surface-app .text-orange-700,
+.surface-app .text-orange-600, .surface-app .text-orange-500 { color: #fdba74 !important; }
+.surface-app .border-orange-200 { border-color: rgba(249,115,22,0.30) !important; }
+
+.surface-app .bg-sky-50       { background-color: rgba(52,211,238,0.12) !important; }
+.surface-app .text-sky-700, .surface-app .text-sky-600, .surface-app .text-sky-500 { color: #67e8f9 !important; }
+.surface-app .border-sky-200  { border-color: rgba(52,211,238,0.30) !important; }
+
+.surface-app .bg-violet-50    { background-color: rgba(164,134,255,0.13) !important; }
+.surface-app .text-violet-900, .surface-app .text-violet-700, .surface-app .text-violet-600,
+.surface-app .text-violet-500, .surface-app .text-violet-400 { color: #c4b1ff !important; }
+.surface-app .border-violet-200 { border-color: rgba(164,134,255,0.30) !important; }
+
 /* Inputs / selects / textareas → dark fields */
 .surface-app input,
 .surface-app select,
@@ -133,6 +196,14 @@ body {
   border-radius: 10px !important;
   color: var(--text) !important;
 }
+/* Recharts colours tooltip rows/labels with its own inline colours (the slice
+   colour for items, dark #333 for the label) — unreadable on the dark tooltip.
+   Force them light so every chart's hover text stays visible. */
+.surface-app .recharts-tooltip-label,
+.surface-app .recharts-tooltip-item-list .recharts-tooltip-item,
+.surface-app .recharts-tooltip-item-name,
+.surface-app .recharts-tooltip-item-value,
+.surface-app .recharts-tooltip-item-separator { color: var(--text) !important; }
 
 /* Keep vivid gradient CTAs/brand marks punchy (don't dim them) */
 .surface-app .bg-gradient-to-r.from-blue-600,

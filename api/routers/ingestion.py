@@ -11,6 +11,16 @@ from models.user import User
 
 router = APIRouter()
 
+# source_type → Celery task name. Single source of truth for both the admin
+# trigger and the per-topic "Collect now" flow.
+TASK_MAP = {
+    "google_trends": "ingestion.tasks.collect_google_trends",
+    "reddit": "ingestion.tasks.collect_reddit",
+    "rss": "ingestion.tasks.collect_rss_news",
+    "forum": "ingestion.tasks.collect_forums",
+    "youtube": "ingestion.tasks.collect_youtube",
+}
+
 
 class TriggerRequest(BaseModel):
     source_type: str
@@ -21,6 +31,12 @@ class JobStatus(BaseModel):
     task_id: str
     status: str
     message: str
+
+
+class TopicCollectResult(BaseModel):
+    topic_id: int
+    dispatched: dict  # source_type -> task_id
+    skipped: list     # source_types not dispatched (disabled / unsupported)
 
 
 @router.post("/trigger", response_model=JobStatus)
@@ -36,14 +52,7 @@ async def trigger_ingestion(
 
     from workers.celery_app import celery_app
 
-    task_map = {
-        "google_trends": "ingestion.tasks.collect_google_trends",
-        "reddit": "ingestion.tasks.collect_reddit",
-        "rss": "ingestion.tasks.collect_rss_news",
-        "forum": "ingestion.tasks.collect_forums",
-        "youtube": "ingestion.tasks.collect_youtube",
-    }
-    task_name = task_map.get(body.source_type)
+    task_name = TASK_MAP.get(body.source_type)
     if not task_name:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -52,6 +61,53 @@ async def trigger_ingestion(
 
     task = celery_app.send_task(task_name, kwargs={"search_topic_id": body.search_topic_id})
     return JobStatus(task_id=task.id, status="queued", message=f"Ingestion task queued: {task_name}")
+
+
+@router.post("/topics/{topic_id}/collect", response_model=TopicCollectResult)
+async def collect_topic_now(
+    topic_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Self-service 'Collect now' — kick off ingestion for a topic's own enabled
+    sources. The topic owner (or an admin) may run it; still DPIA-gated. Each
+    collector receives the search_topic_id, so it uses the brand's keywords and
+    the topic's markets/languages."""
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+    from models.search_topic import SearchTopic
+    from models.user import UserRole
+
+    if not settings.DPIA_PROCESSING_ENABLED:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="DPIA_PROCESSING_ENABLED is false. Complete the DPIA before enabling data collection.",
+        )
+
+    topic = (await db.execute(
+        select(SearchTopic).where(SearchTopic.id == topic_id).options(selectinload(SearchTopic.sources))
+    )).scalar_one_or_none()
+    if topic is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Search topic not found")
+    if current_user.role != UserRole.admin and topic.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your topic")
+
+    from workers.celery_app import celery_app
+
+    dispatched: dict = {}
+    skipped: list = []
+    for src in topic.sources:
+        if not src.is_enabled:
+            skipped.append(src.source_type)
+            continue
+        task_name = TASK_MAP.get(src.source_type)
+        if not task_name:
+            skipped.append(src.source_type)  # e.g. licensed_api — no collector
+            continue
+        task = celery_app.send_task(task_name, kwargs={"search_topic_id": topic.id})
+        dispatched[src.source_type] = task.id
+
+    return TopicCollectResult(topic_id=topic.id, dispatched=dispatched, skipped=skipped)
 
 
 @router.post("/pharmacy/import", response_model=JobStatus)
