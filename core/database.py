@@ -9,7 +9,7 @@ from models.base import Base  # noqa: F401 — re-exported so Alembic & tests ca
 
 engine = create_async_engine(
     settings.DATABASE_URL,
-    echo=settings.APP_ENV == "development",
+    echo=False,
     pool_pre_ping=True,
     pool_size=10,
     max_overflow=20,

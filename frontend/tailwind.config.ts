@@ -34,6 +34,21 @@ export default {
           900: "#46258a",
           950: "#2a1660",
         },
+        // Enterprise navy — the dark left rail. A deep, slightly blue-cool slate
+        // that reads as "authoritative / corporate" against the bright workspace.
+        ink: {
+          50:  "#f3f5f9",
+          100: "#e5e9f1",
+          200: "#c8d1e1",
+          300: "#9caacb",
+          400: "#6c7da3",
+          500: "#4a5a80",
+          600: "#374466",
+          700: "#28324d",   // hover surface on the rail
+          800: "#1a2236",   // rail mid
+          900: "#111726",   // rail base
+          950: "#0b0f1a",   // rail deep / gradient foot
+        },
       },
       fontFamily: {
         sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
@@ -45,6 +60,16 @@ export default {
         floating:     "0 12px 32px -12px rgba(15, 23, 42, 0.12), 0 4px 12px -4px rgba(15, 23, 42, 0.08)",
         "ring-brand":  "0 0 0 4px rgba(63, 109, 255, 0.12)",
         "ring-accent": "0 0 0 4px rgba(136, 93, 250, 0.14)",
+        // Crisp depth for the dark rail so it lifts off the bright workspace.
+        rail:          "1px 0 0 0 rgba(15,23,42,0.06), 4px 0 24px -8px rgba(11,15,26,0.45)",
+        // ── Dark "command center" glow shadows ──────────────────────────────
+        "glow-brand":  "0 0 0 1px rgba(63,109,255,0.25), 0 8px 30px -8px rgba(63,109,255,0.35)",
+        "glow-accent": "0 0 0 1px rgba(136,93,250,0.25), 0 8px 30px -8px rgba(136,93,250,0.40)",
+        "glow-cyan":   "0 0 0 1px rgba(34,211,238,0.22), 0 8px 30px -8px rgba(34,211,238,0.30)",
+        "card-dark":   "0 1px 0 0 rgba(255,255,255,0.04) inset, 0 20px 40px -24px rgba(0,0,0,0.7)",
+      },
+      dropShadow: {
+        glow: "0 0 10px rgba(136,93,250,0.45)",
       },
       keyframes: {
         shimmer: {

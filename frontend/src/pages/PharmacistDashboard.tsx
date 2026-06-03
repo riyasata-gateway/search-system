@@ -112,10 +112,23 @@ export default function PharmacistDashboard() {
   if (isLoading) return <div className="text-gray-500 text-sm">Loading dashboard…</div>;
 
   const trendData = (dashboard?.trending_categories ?? []).slice(0, 8).map((t: any) => ({
-    name: `Cat ${t.entity_id}`,
+    name: t.category_name ?? `Category ${t.entity_id}`,
     score: parseFloat(t.score).toFixed(1),
     change: t.relative_change ? parseFloat(t.relative_change).toFixed(0) : 0,
   }));
+
+  // Pharmacist-facing copy built from structured fields — never shows the raw
+  // category id, and falls back to the stored reason only if names are missing.
+  const recLine = (rec: any): string => {
+    const cat = rec.category_name;
+    const prod = rec.product_name;
+    if (prod && cat) {
+      return rec.action === "reorder"
+        ? `${prod} (${cat}) is trending — reorder soon to avoid a stockout.`
+        : `${cat} is trending. You don't stock ${prod} — consider adding it.`;
+    }
+    return rec.reason;
+  };
 
   return (
     <div className="space-y-6">
@@ -194,7 +207,7 @@ export default function PharmacistDashboard() {
                       Confidence: {rec.confidence_score ? `${(rec.confidence_score * 100).toFixed(0)}%` : "—"}
                     </span>
                   </div>
-                  <p className="text-sm text-gray-700 leading-relaxed">{rec.reason}</p>
+                  <p className="text-sm text-gray-700 leading-relaxed">{recLine(rec)}</p>
                   {rec.source_refs?.length > 0 && (
                     <div className="flex gap-1 mt-1.5 flex-wrap">
                       {rec.source_refs.map((ref: string, i: number) => (

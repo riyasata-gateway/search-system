@@ -2,11 +2,15 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "../api/client";
 import { Bell, CheckCircle, AlertTriangle, Shield, TrendingUp, Info } from "lucide-react";
 
+// Dark-theme-native severity styles. We use translucent colour washes + light
+// text (arbitrary /opacity utilities) rather than Tailwind's light *-50/*-800
+// pairs, which the global dark reskin only partially remaps and which left text
+// unreadable on dark cards.
 const SEVERITY_STYLES: Record<string, string> = {
-  critical: "bg-red-50 border-red-200 text-red-800",
-  high: "bg-orange-50 border-orange-200 text-orange-800",
-  medium: "bg-yellow-50 border-yellow-200 text-yellow-800",
-  low: "bg-blue-50 border-blue-200 text-blue-800",
+  critical: "bg-red-500/10 border-red-500/30 text-red-200",
+  high: "bg-orange-500/10 border-orange-500/30 text-orange-200",
+  medium: "bg-amber-500/10 border-amber-500/30 text-amber-100",
+  low: "bg-blue-500/10 border-blue-500/30 text-blue-200",
 };
 
 const TYPE_ICONS: Record<string, React.ReactNode> = {
@@ -72,6 +76,11 @@ export default function Alerts() {
                         {alert.alert_type?.replace(/_/g, " ")}
                       </span>
                       <span className="text-xs opacity-70 capitalize">{alert.severity}</span>
+                      {alert.count > 1 && (
+                        <span className="text-xs font-semibold px-1.5 py-0.5 rounded-full bg-white/10 border border-current">
+                          ×{alert.count} mentions
+                        </span>
+                      )}
                     </div>
                     <p className="text-sm leading-relaxed">{alert.description}</p>
                     <p className="text-xs opacity-60 mt-1">
@@ -82,7 +91,7 @@ export default function Alerts() {
                 <button
                   onClick={() => acknowledge.mutate(alert.id)}
                   disabled={acknowledge.isPending}
-                  className="shrink-0 flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 bg-white border border-current rounded-lg hover:bg-white/80 transition-colors"
+                  className="shrink-0 flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 bg-white/10 border border-current rounded-lg hover:bg-white/20 transition-colors"
                 >
                   <CheckCircle size={13} />
                   Acknowledge

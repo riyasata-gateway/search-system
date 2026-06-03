@@ -84,6 +84,17 @@ function fmt(n?: number | null, d = 0) {
 
 // ── small components ─────────────────────────────────────────────────────────
 
+function InsufficientData({ note }: { note?: string }) {
+  return (
+    <div className="relative w-full h-40 flex flex-col items-center justify-center text-center px-3">
+      <span className="text-lg font-semibold text-slate-400">Insufficient data</span>
+      <span className="mt-1 text-[10px] text-slate-500 uppercase tracking-wide">
+        {note ?? "No mentions in window"}
+      </span>
+    </div>
+  );
+}
+
 function ScoreRadial({ value, label }: { value: number; label: string }) {
   const data = [{ name: label, value, fill: scoreColour(value) }];
   return (
@@ -220,6 +231,10 @@ export default function BrandPotential() {
   const verdict: string = launch?.context?.verdict ?? "—";
   const lifecycleStage: string = lifecycle?.context?.stage ?? "—";
   const momentumScore = momentum?.metrics[0]?.value ?? 0;
+  // A score of 50 with no underlying mentions is the neutral fallback, not a real
+  // assessment — surface that honestly instead of a misleading precise number.
+  const bpiInsufficient = (bpi?.metrics[0]?.sample_size ?? 0) === 0;
+  const launchInsufficient = (launch?.metrics[0]?.sample_size ?? 0) === 0;
 
   const componentBars = useMemo(() => {
     if (!bpi) return [];
@@ -258,7 +273,7 @@ export default function BrandPotential() {
     <div className="space-y-6 max-w-7xl animate-fade-up">
       {/* Header */}
       <div className="relative rounded-2xl overflow-hidden border border-slate-200/70 bg-white shadow-soft">
-        <div className="absolute inset-0 bg-gradient-to-br from-accent-50/60 via-white to-brand-50/40 pointer-events-none" />
+        <div className="absolute inset-0 bg-gradient-to-br from-accent-500/10 via-transparent to-brand-500/10 pointer-events-none" />
         <div className="relative px-6 py-5 flex flex-wrap items-center gap-4">
           <div className="shrink-0 w-11 h-11 rounded-xl bg-gradient-to-br from-accent-500 to-brand-500 flex items-center justify-center shadow-elevated">
             <Sparkles size={20} className="text-white" strokeWidth={2.4} />
@@ -338,26 +353,38 @@ export default function BrandPotential() {
           {/* Top row — BPI + Launch Readiness + Momentum + Lifecycle */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             <SectionCard icon={<Sparkles size={14} className="text-accent-600" />} title="BPI" subtitle="Awareness × Adoption × Sentiment × Fit">
-              <ScoreRadial value={bpiScore} label="BPI" />
-              <div className="mt-3 space-y-0.5">
-                {bpi?.metrics.slice(1).map((m) => (
-                  <MetricRow key={m.label} label={m.label} value={m.value} unit={m.unit?.replace("0–100", "") ?? "%"} />
-                ))}
-              </div>
+              {bpiInsufficient ? (
+                <InsufficientData />
+              ) : (
+                <>
+                  <ScoreRadial value={bpiScore} label="BPI" />
+                  <div className="mt-3 space-y-0.5">
+                    {bpi?.metrics.slice(1).map((m) => (
+                      <MetricRow key={m.label} label={m.label} value={m.value} unit={m.unit?.replace("0–100", "") ?? "%"} />
+                    ))}
+                  </div>
+                </>
+              )}
             </SectionCard>
 
             <SectionCard icon={<Rocket size={14} className="text-brand-600" />} title="Launch Readiness" subtitle="Composite of Phase 1 outputs">
-              <ScoreRadial value={launchScore} label={verdict.toUpperCase()} />
-              <div className="mt-3">
-                <span className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${VERDICT_STYLE[verdict] ?? "bg-slate-50 text-slate-500 border-slate-200"}`}>
-                  Verdict: {verdict}
-                </span>
-              </div>
-              <div className="mt-3 space-y-0.5">
-                {launch?.metrics.slice(1).map((m) => (
-                  <MetricRow key={m.label} label={m.label} value={m.value} unit="" />
-                ))}
-              </div>
+              {launchInsufficient ? (
+                <InsufficientData note="No recent mentions" />
+              ) : (
+                <>
+                  <ScoreRadial value={launchScore} label={verdict.toUpperCase()} />
+                  <div className="mt-3">
+                    <span className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${VERDICT_STYLE[verdict] ?? "bg-slate-50 text-slate-500 border-slate-200"}`}>
+                      Verdict: {verdict}
+                    </span>
+                  </div>
+                  <div className="mt-3 space-y-0.5">
+                    {launch?.metrics.slice(1).map((m) => (
+                      <MetricRow key={m.label} label={m.label} value={m.value} unit="" />
+                    ))}
+                  </div>
+                </>
+              )}
             </SectionCard>
 
             <SectionCard icon={<TrendingUp size={14} className="text-emerald-600" />} title="Momentum" subtitle="Velocity + acceleration">

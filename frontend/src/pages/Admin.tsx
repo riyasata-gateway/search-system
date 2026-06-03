@@ -6,17 +6,28 @@ import { Users, FileText, UserPlus, UserX } from "lucide-react";
 const ROLE_STYLES: Record<string, string> = {
   admin: "bg-red-100 text-red-700",
   pharmacist: "bg-blue-100 text-blue-700",
-  lab_user: "bg-purple-100 text-purple-700",
+  marketing: "bg-amber-100 text-amber-700",
+  brand_manager: "bg-purple-100 text-purple-700",
 };
 
 export default function Admin() {
   const queryClient = useQueryClient();
   const [tab, setTab] = useState<"users" | "audit">("users");
-  const [newUser, setNewUser] = useState({ email: "", password: "", role: "pharmacist" });
+  const [newUser, setNewUser] = useState({ email: "", password: "", role: "pharmacist", pharmacy_id: "", brand_group_id: "" });
 
   const { data: users } = useQuery({
     queryKey: ["admin-users"],
     queryFn: () => apiClient.get("/admin/users").then((r) => r.data),
+  });
+
+  const { data: pharmacies } = useQuery({
+    queryKey: ["admin-pharmacies"],
+    queryFn: () => apiClient.get("/admin/pharmacies").then((r) => r.data),
+  });
+
+  const { data: brandGroups } = useQuery({
+    queryKey: ["admin-brand-groups"],
+    queryFn: () => apiClient.get("/admin/brand-groups").then((r) => r.data),
   });
 
   const { data: auditLogs } = useQuery({
@@ -25,11 +36,24 @@ export default function Admin() {
     enabled: tab === "audit",
   });
 
+  const isPharmacist = newUser.role === "pharmacist";
+  const isLab = newUser.role === "marketing" || newUser.role === "brand_manager";
+
   const createUser = useMutation({
-    mutationFn: (data: typeof newUser) => apiClient.post("/admin/users", data),
+    mutationFn: (data: typeof newUser) =>
+      apiClient.post("/admin/users", {
+        email: data.email,
+        password: data.password,
+        role: data.role,
+        pharmacy_id: data.role === "pharmacist" && data.pharmacy_id ? Number(data.pharmacy_id) : null,
+        brand_group_id:
+          (data.role === "marketing" || data.role === "brand_manager") && data.brand_group_id
+            ? Number(data.brand_group_id)
+            : null,
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["admin-users"] });
-      setNewUser({ email: "", password: "", role: "pharmacist" });
+      setNewUser({ email: "", password: "", role: "pharmacist", pharmacy_id: "", brand_group_id: "" });
     },
   });
 
@@ -85,9 +109,38 @@ export default function Admin() {
                 className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 <option value="pharmacist">Pharmacist</option>
-                <option value="lab_user">Lab User</option>
+                <option value="marketing">Marketing</option>
+                <option value="brand_manager">Brand Manager</option>
                 <option value="admin">Admin</option>
               </select>
+              {isPharmacist && (
+                <select
+                  value={newUser.pharmacy_id}
+                  onChange={(e) => setNewUser((u) => ({ ...u, pharmacy_id: e.target.value }))}
+                  className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">— assign pharmacy (optional) —</option>
+                  {(pharmacies ?? []).map((p: any) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}{p.city ? ` · ${p.city}` : ""}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {isLab && (
+                <select
+                  value={newUser.brand_group_id}
+                  onChange={(e) => setNewUser((u) => ({ ...u, brand_group_id: e.target.value }))}
+                  className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">— assign brand group (optional) —</option>
+                  {(brandGroups ?? []).map((g: any) => (
+                    <option key={g.id} value={g.id}>
+                      {g.name?.replace(/_/g, " ")}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
             <button
               onClick={() => createUser.mutate(newUser)}

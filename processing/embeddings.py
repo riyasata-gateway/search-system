@@ -14,11 +14,31 @@ def _get_model():
     return SentenceTransformer(settings.EMBEDDING_MODEL, device="cpu")
 
 
+def _connect_qdrant():
+    """Connect to the Qdrant server at QDRANT_URL, falling back to an on-disk
+    embedded store at QDRANT_PATH when the server is unreachable.
+
+    Embedded mode is single-process (file-locked): only one process — the API
+    *or* a backfill script — may hold it at a time. It exists so vectors are
+    still persisted in Qdrant format when the Docker server isn't running.
+    """
+    from qdrant_client import QdrantClient
+    try:
+        client = QdrantClient(url=settings.QDRANT_URL, timeout=3.0)
+        client.get_collections()  # cheap reachability probe
+        return client, "server"
+    except Exception as exc:
+        logger.warning("qdrant_server_unreachable_fallback_embedded",
+                       url=settings.QDRANT_URL, path=settings.QDRANT_PATH, error=str(exc))
+        import os
+        os.makedirs(settings.QDRANT_PATH, exist_ok=True)
+        return QdrantClient(path=settings.QDRANT_PATH), "embedded"
+
+
 @lru_cache(maxsize=1)
 def _get_qdrant():
-    from qdrant_client import QdrantClient
     from qdrant_client.models import Distance, VectorParams
-    client = QdrantClient(url=settings.QDRANT_URL)
+    client, _mode = _connect_qdrant()
     try:
         client.get_collection(settings.QDRANT_COLLECTION)
     except Exception:

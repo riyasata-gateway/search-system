@@ -53,7 +53,9 @@ def require_role(*roles: UserRole):
 
 require_admin = require_role(UserRole.admin)
 require_pharmacist = require_role(UserRole.pharmacist, UserRole.admin)
-require_lab = require_role(UserRole.lab_user, UserRole.admin)
+require_marketing = require_role(UserRole.marketing, UserRole.admin)
+require_brand_manager = require_role(UserRole.brand_manager, UserRole.admin)
+require_lab = require_role(UserRole.marketing, UserRole.brand_manager, UserRole.admin)
 
 
 async def write_audit_log(

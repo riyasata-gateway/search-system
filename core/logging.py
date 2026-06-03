@@ -6,14 +6,33 @@ import structlog
 from core.config import settings
 
 
+_NOISY_LOGGERS = (
+    "sqlalchemy.engine",
+    "sqlalchemy.pool",
+    "httpcore",
+    "httpx",
+    "urllib3",
+    "huggingface_hub",
+    "sentence_transformers",
+    "multipart",
+    "python_multipart",
+    "passlib",
+    "asyncio",
+)
+
+
 def configure_logging() -> None:
-    log_level = logging.DEBUG if settings.APP_ENV == "development" else logging.INFO
+    log_level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
 
     logging.basicConfig(
         format="%(message)s",
         stream=sys.stdout,
         level=log_level,
     )
+
+    # Silence noisy third-party loggers even when the root level is DEBUG.
+    for name in _NOISY_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
 
     renderer = (
         structlog.dev.ConsoleRenderer()

@@ -36,6 +36,23 @@ class UserOut(BaseModel):
         from_attributes = True
 
 
+class PharmacyOption(BaseModel):
+    id: int
+    name: str
+    city: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class BrandGroupOption(BaseModel):
+    id: int
+    name: str
+
+    class Config:
+        from_attributes = True
+
+
 class AuditLogOut(BaseModel):
     id: int
     user_id: Optional[int]
@@ -108,6 +125,30 @@ async def deactivate_user(
     await db.commit()
     await db.refresh(user)
     return user
+
+
+@router.get("/pharmacies", response_model=List[PharmacyOption])
+async def list_pharmacies(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """Pharmacies available to assign a pharmacist to (Admin create-user form)."""
+    from models.pharmacy import Pharmacy
+
+    rows = (await db.execute(select(Pharmacy).order_by(Pharmacy.name))).scalars().all()
+    return rows
+
+
+@router.get("/brand-groups", response_model=List[BrandGroupOption])
+async def list_brand_groups(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """Brand groups available to assign a marketing/brand_manager user to."""
+    from models.brand import BrandGroup
+
+    rows = (await db.execute(select(BrandGroup).order_by(BrandGroup.name))).scalars().all()
+    return rows
 
 
 @router.get("/audit-logs", response_model=List[AuditLogOut])

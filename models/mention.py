@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, Numeric, SmallInteger, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -96,6 +96,13 @@ class Mention(Base):
         UUID(as_uuid=False), nullable=True,
         comment="Link to Qdrant vector point for semantic search"
     )
+    # ── Review-native fields (pharmacy product-review imports) ───────────────
+    rating: Mapped[Optional[int]] = mapped_column(
+        SmallInteger, nullable=True,
+        comment="Star rating 1–5 for review-sourced mentions (null for non-review sources)"
+    )
+    brand_name: Mapped[Optional[str]] = mapped_column(String(256), nullable=True, index=True)
+    product_name: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
 
     source: Mapped[Optional["DataSource"]] = relationship("DataSource")
     entities: Mapped[list["MentionEntity"]] = relationship(

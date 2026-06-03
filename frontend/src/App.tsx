@@ -9,6 +9,7 @@ import AdverseEventReview from "./pages/AdverseEventReview";
 import Admin from "./pages/Admin";
 import Search from "./pages/Search";
 import BrandPotential from "./pages/BrandPotential";
+import Analytics from "./pages/Analytics";
 import Layout from "./components/Layout";
 
 function ProtectedRoute({ children, roles }: { children: React.ReactNode; roles?: string[] }) {
@@ -38,7 +39,7 @@ export default function App() {
             element={
               user?.role === "pharmacist" ? (
                 <Navigate to="/pharmacist" replace />
-              ) : user?.role === "lab_user" ? (
+              ) : user?.role === "marketing" || user?.role === "brand_manager" ? (
                 <Navigate to="/lab" replace />
               ) : (
                 <Navigate to="/admin" replace />
@@ -56,7 +57,7 @@ export default function App() {
           <Route
             path="lab"
             element={
-              <ProtectedRoute roles={["lab_user", "admin"]}>
+              <ProtectedRoute roles={["marketing", "brand_manager", "admin"]}>
                 <LabDashboard />
               </ProtectedRoute>
             }
@@ -64,7 +65,7 @@ export default function App() {
           <Route
             path="setup"
             element={
-              <ProtectedRoute>
+              <ProtectedRoute roles={["marketing", "brand_manager", "admin"]}>
                 <BrandSetup />
               </ProtectedRoute>
             }
@@ -80,7 +81,7 @@ export default function App() {
           <Route
             path="adverse-events"
             element={
-              <ProtectedRoute>
+              <ProtectedRoute roles={["pharmacist", "admin"]}>
                 <AdverseEventReview />
               </ProtectedRoute>
             }
@@ -96,8 +97,16 @@ export default function App() {
           <Route
             path="brand-potential"
             element={
-              <ProtectedRoute roles={["lab_user", "admin"]}>
+              <ProtectedRoute roles={["marketing", "brand_manager", "admin"]}>
                 <BrandPotential />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="analytics"
+            element={
+              <ProtectedRoute>
+                <Analytics />
               </ProtectedRoute>
             }
           />

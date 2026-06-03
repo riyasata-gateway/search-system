@@ -10,17 +10,68 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.dependencies import get_current_user, require_pharmacist, write_audit_log
 from core.database import get_db
+from models.product import Product, ProductCategory
 from models.recommendation import Recommendation, RecommendationAction, RecommendationStatus, RecommendationType
 from models.trend import TrendSignal, TrendPeriod
 from models.user import User
 
 router = APIRouter()
 
+# A focused queue beats an exhaustive one — pharmacists act on a handful of the
+# strongest gaps, not a wall of every missing SKU.
+_MAX_RECOMMENDATIONS = 7
+_MAX_PER_CATEGORY = 3
+
+
+async def _category_names(db: AsyncSession, ids) -> dict:
+    ids = {i for i in ids if i is not None}
+    if not ids:
+        return {}
+    rows = (await db.execute(
+        select(ProductCategory.id, ProductCategory.name_en).where(ProductCategory.id.in_(ids))
+    )).all()
+    return {r.id: r.name_en for r in rows}
+
+
+async def _product_names(db: AsyncSession, ids) -> dict:
+    ids = {i for i in ids if i is not None}
+    if not ids:
+        return {}
+    rows = (await db.execute(
+        select(Product.id, Product.name).where(Product.id.in_(ids))
+    )).all()
+    return {r.id: r.name for r in rows}
+
+
+def _diversify(recs, limit=_MAX_RECOMMENDATIONS, per_category=_MAX_PER_CATEGORY):
+    """Take the top `limit` recs (already confidence-sorted) but cap how many can
+    come from one category, so the queue spans the pharmacist's range rather than
+    flooding them with one trending category's whole shelf."""
+    picked, per = [], {}
+    for r in recs:
+        c = r.category_id
+        if per.get(c, 0) >= per_category:
+            continue
+        picked.append(r)
+        per[c] = per.get(c, 0) + 1
+        if len(picked) >= limit:
+            break
+    return picked
+
+
+def _rec_out(r: Recommendation, cat_map: dict, prod_map: dict) -> "RecommendationOut":
+    out = RecommendationOut.model_validate(r)
+    out.category_name = cat_map.get(r.category_id)
+    out.product_name = prod_map.get(r.product_id)
+    return out
+
 
 class RecommendationOut(BaseModel):
     id: int
     product_id: Optional[int]
     category_id: Optional[int]
+    product_name: Optional[str] = None
+    category_name: Optional[str] = None
     recommendation_type: RecommendationType
     reason: Optional[str]
     external_trend_score: Optional[float]
@@ -43,6 +94,7 @@ class ActionUpdate(BaseModel):
 class TrendingCategoryOut(BaseModel):
     entity_type: str
     entity_id: int
+    category_name: Optional[str] = None
     country: Optional[str]
     region: Optional[str]
     city: Optional[str]
@@ -83,9 +135,9 @@ async def pharmacist_dashboard(
         select(Recommendation).where(
             Recommendation.pharmacy_id == current_user.pharmacy_id,
             Recommendation.status == RecommendationStatus.pending,
-        ).order_by(Recommendation.confidence_score.desc()).limit(10)
+        ).order_by(Recommendation.confidence_score.desc()).limit(40)
     )
-    recommendations = rec_result.scalars().all()
+    recommendations = _diversify(rec_result.scalars().all())
 
     trend_result = await db.execute(
         select(TrendSignal).where(
@@ -104,6 +156,11 @@ async def pharmacist_dashboard(
     )
     pending_count = len(pending_count_result.scalars().all())
 
+    cat_map = await _category_names(
+        db, {t.entity_id for t in trending} | {r.category_id for r in recommendations}
+    )
+    prod_map = await _product_names(db, {r.product_id for r in recommendations})
+
     return PharmacistDashboardOut(
         pharmacy_id=pharmacy.id,
         pharmacy_name=pharmacy.name,
@@ -113,6 +170,7 @@ async def pharmacist_dashboard(
             TrendingCategoryOut(
                 entity_type=t.entity_type,
                 entity_id=t.entity_id,
+                category_name=cat_map.get(t.entity_id),
                 country=t.country,
                 region=t.region,
                 city=t.city,
@@ -122,7 +180,7 @@ async def pharmacist_dashboard(
             )
             for t in trending
         ],
-        top_recommendations=recommendations,
+        top_recommendations=[_rec_out(r, cat_map, prod_map) for r in recommendations],
     )
 
 
@@ -131,7 +189,7 @@ async def list_recommendations(
     recommendation_type: Optional[RecommendationType] = None,
     rec_status: Optional[RecommendationStatus] = Query(None, alias="status"),
     skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(_MAX_RECOMMENDATIONS, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_pharmacist),
 ):
@@ -144,9 +202,15 @@ async def list_recommendations(
     if rec_status:
         q = q.where(Recommendation.status == rec_status)
 
-    q = q.order_by(Recommendation.confidence_score.desc()).offset(skip).limit(limit)
+    # Fetch a pool, then diversify across categories down to `limit` so the queue
+    # stays a focused, range-spanning top-N rather than one category's whole shelf.
+    q = q.order_by(Recommendation.confidence_score.desc()).offset(skip).limit(max(limit * 6, 40))
     result = await db.execute(q)
-    return result.scalars().all()
+    recs = _diversify(result.scalars().all(), limit=limit)
+
+    cat_map = await _category_names(db, {r.category_id for r in recs})
+    prod_map = await _product_names(db, {r.product_id for r in recs})
+    return [_rec_out(r, cat_map, prod_map) for r in recs]
 
 
 @router.put("/recommendations/{rec_id}/action", response_model=RecommendationOut)
@@ -200,10 +264,12 @@ async def trending_categories(
     q = q.order_by(TrendSignal.score.desc()).limit(limit)
     result = await db.execute(q)
     rows = result.scalars().all()
+    cat_map = await _category_names(db, {r.entity_id for r in rows})
     return [
         TrendingCategoryOut(
             entity_type=r.entity_type,
             entity_id=r.entity_id,
+            category_name=cat_map.get(r.entity_id),
             country=r.country,
             region=r.region,
             city=r.city,

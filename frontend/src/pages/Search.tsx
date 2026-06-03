@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import {
   PieChart, Pie, Cell, ResponsiveContainer, Tooltip,
   AreaChart, Area, XAxis, YAxis,
@@ -11,7 +11,10 @@ import { useI18n } from "../i18n";
 import {
   Search as SearchIcon, AlertTriangle, ExternalLink, Filter,
   Loader2, Globe, Rss, Clock, Sparkles,
-  CheckCircle2, Info, Languages, Wand2, ShieldAlert, History, Command,
+  CheckCircle2, Info, Languages, ShieldAlert, History, Command,
+  Stethoscope, Shield, Eye, ThumbsUp, MessageSquare, Youtube, PlayCircle,
+  Megaphone, Briefcase,
+  type LucideIcon,
 } from "lucide-react";
 
 // ── constants ────────────────────────────────────────────────────────────────
@@ -57,6 +60,48 @@ const SENTIMENT_COLOUR: Record<string, string> = {
 
 const STORAGE_KEY = "pw_search_state";
 const AI_STORAGE_KEY = "pw_ai_search_state";
+const LENS_STORAGE_KEY = "pw_lens_role";
+
+// ── Role lens ──────────────────────────────────────────────────────────────────
+
+type Role = "pharmacist" | "marketing" | "brand_manager" | "admin";
+
+const ROLE_ORDER: Role[] = ["pharmacist", "marketing", "brand_manager", "admin"];
+
+const ROLE_ICON: Record<Role, LucideIcon> = {
+  pharmacist: Stethoscope,
+  marketing: Megaphone,
+  brand_manager: Briefcase,
+  admin: Shield,
+};
+
+// Gradient used for the active-lens chip / switcher pill per role.
+const ROLE_ACCENT: Record<Role, string> = {
+  pharmacist: "from-emerald-500 to-teal-600",
+  marketing: "from-amber-500 to-orange-600",
+  brand_manager: "from-violet-500 to-fuchsia-600",
+  admin: "from-slate-600 to-slate-800",
+};
+
+function isRole(r: unknown): r is Role {
+  return r === "pharmacist" || r === "marketing" || r === "brand_manager" || r === "admin";
+}
+
+function getLoggedInRole(): Role {
+  try {
+    const r = localStorage.getItem("user_role");
+    if (isRole(r)) return r;
+  } catch {}
+  return "admin";
+}
+
+// 142 → "142", 3200 → "3.2k", 142000 → "142k", 1_200_000 → "1.2M"
+function formatCompact(n?: number): string {
+  if (n == null || isNaN(n)) return "0";
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return (n / 1000).toFixed(n < 10_000 ? 1 : 0).replace(/\.0$/, "") + "k";
+  return (n / 1_000_000).toFixed(1).replace(/\.0$/, "") + "M";
+}
 
 // ── types ─────────────────────────────────────────────────────────────────────
 
@@ -73,6 +118,15 @@ interface LiveResult {
   is_risk: boolean;
   engagement?: number;
   query: string;
+  meta?: {
+    video_id?: string;
+    title?: string;
+    channel_title?: string;
+    thumbnail?: string;
+    views?: number;
+    likes?: number;
+    comments?: number;
+  };
 }
 
 interface SourceNotice {
@@ -80,6 +134,51 @@ interface SourceNotice {
   status: "ok" | "missing_key" | "empty" | "error";
   count: number;
   detail?: string;
+}
+
+// Per-search metrics (feature-engineered server-side in core/search_metrics.py)
+interface MetricSlice { label: string; count: number; value?: number; }
+interface KpiCard { key: string; label: string; value: string; sub?: string; tone?: "good" | "warn" | "danger" | null; }
+interface MetricTimePoint { date: string; count: number; positive: number; neutral: number; negative: number; }
+interface CrossRow { label: string; positive: number; neutral: number; negative: number; total: number; }
+interface SearchMetrics {
+  role: Role;
+  role_label: string;
+  total: number;
+  headline: KpiCard[];
+  sentiment_index: number;
+  net_sentiment_label: string;
+  reach_total: number;
+  engagement_rate: number;
+  risk_share: number;
+  official_coverage: number;
+  source_diversity: number;
+  sentiment_mix: MetricSlice[];
+  topic_mix: MetricSlice[];
+  source_mix: MetricSlice[];
+  channel_reach: MetricSlice[];
+  geo_mix: MetricSlice[];
+  language_mix: MetricSlice[];
+  risk_mix: MetricSlice[];
+  timeline: MetricTimePoint[];
+  sentiment_by_topic: CrossRow[];
+  risk_by_source: MetricSlice[];
+}
+
+// DIA framework metric envelope (intelligence/output_schema.py)
+interface MetricValue { kind: "abs" | "percent" | "score"; value: number; label: string; unit?: string | null; delta?: number | null; confidence?: number | null; comparison_window?: string | null; }
+interface MetricBundle { name: string; metrics: MetricValue[]; context?: Record<string, unknown>; }
+interface FrameworkMetrics { bundles: Record<string, MetricBundle>; scalars: Record<string, number | string | boolean | null>; }
+interface SearchIntelligence {
+  role: Role;
+  role_label: string;
+  mode: string;
+  brand_resolved: boolean;
+  brand_id?: number | null;
+  brand_name?: string | null;
+  headline: KpiCard[];
+  snapshot: SearchMetrics;
+  framework?: FrameworkMetrics | null;
 }
 
 interface LiveResponse {
@@ -90,6 +189,9 @@ interface LiveResponse {
   source_notices?: SourceNotice[];
   expanded_terms: string[];
   elapsed_ms: number;
+  role?: Role;
+  role_label?: string;
+  metrics?: SearchIntelligence;
 }
 
 interface AISource {
@@ -111,12 +213,8 @@ interface AIResponse {
   expanded_terms: string[];
   model: string;
   elapsed_ms: number;
-}
-
-// Bridge payload: lifted to <Search/> so the Live tab can hand context to AI tab
-interface BridgePayload {
-  q: string;
-  sources: AISource[];
+  role?: Role;
+  role_label?: string;
 }
 
 type Tab = "search" | "ai";
@@ -134,6 +232,56 @@ function SentimentBadge({ value }: { value: string }) {
 function loadSaved() {
   try { return JSON.parse(sessionStorage.getItem(STORAGE_KEY) || "{}"); }
   catch { return {}; }
+}
+
+// Segmented "View as" control — only rendered for admins. Lets one account
+// preview how each persona sees the same query (the demo the brief asked for).
+function RoleSwitcher({ value, onChange }: { value: Role; onChange: (r: Role) => void }) {
+  const { t } = useI18n();
+  return (
+    <div className="inline-flex items-center gap-1.5">
+      <span className="text-[11px] font-medium text-slate-400 mr-0.5">{t("lens.viewAs")}</span>
+      <div className="inline-flex items-center bg-white border border-slate-200 rounded-lg p-1 shadow-soft">
+        {ROLE_ORDER.map((r) => {
+          const Icon = ROLE_ICON[r];
+          const active = value === r;
+          return (
+            <button
+              key={r}
+              type="button"
+              onClick={() => onChange(r)}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold transition-all ${
+                active
+                  ? `text-white bg-gradient-to-br ${ROLE_ACCENT[r]} shadow-sm`
+                  : "text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              <Icon size={13} /> {t(`role.${r}`)}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Always-visible banner stating which lens is applied + what it prioritises.
+function LensBanner({ role }: { role: Role }) {
+  const { t } = useI18n();
+  const Icon = ROLE_ICON[role];
+  return (
+    <div className="flex items-start gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-soft">
+      <span className={`shrink-0 w-9 h-9 rounded-lg bg-gradient-to-br ${ROLE_ACCENT[role]} flex items-center justify-center shadow-soft`}>
+        <Icon size={17} className="text-white" />
+      </span>
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-semibold text-slate-800">
+          {t("lens.label")} <span className="capitalize">{t(`role.${role}`)}</span>
+        </p>
+        <p className="text-xs text-slate-500 mt-0.5">{t(`lens.focus.${role}`)}</p>
+      </div>
+    </div>
+  );
 }
 
 // Renders text containing [n] markers as React nodes, where each marker becomes
@@ -266,50 +414,8 @@ const SENTIMENT_FILL: Record<string, string> = {
   negative: "#ef4444",
 };
 
-function buildSentimentData(results: LiveResult[]) {
-  const counts = { positive: 0, neutral: 0, negative: 0 } as Record<string, number>;
-  for (const r of results) {
-    if (r.sentiment in counts) counts[r.sentiment]++;
-  }
-  // Always return all three slices — Recharts collapses zero-value slices
-  // automatically, so monotone results render as a clean single-colour ring
-  // instead of disappearing.
-  return [
-    { name: "Positive", value: counts.positive, key: "positive" },
-    { name: "Neutral",  value: counts.neutral,  key: "neutral"  },
-    { name: "Negative", value: counts.negative, key: "negative" },
-  ];
-}
-
-function buildTimelineData(results: LiveResult[]) {
-  // Bucket by ISO date; skip mentions without published_at.
-  const map = new Map<string, { date: string; positive: number; neutral: number; negative: number }>();
-  for (const r of results) {
-    if (!r.published_at) continue;
-    const d = new Date(r.published_at);
-    if (isNaN(d.getTime())) continue;
-    const key = d.toISOString().slice(0, 10);
-    const row = map.get(key) ?? { date: key, positive: 0, neutral: 0, negative: 0 };
-    row[r.sentiment as "positive" | "neutral" | "negative"]++;
-    map.set(key, row);
-  }
-  return Array.from(map.values()).sort((a, b) => a.date.localeCompare(b.date));
-}
-
-function buildTopBars(results: LiveResult[], field: "source_type" | "topic", topN = 5) {
-  const counts = new Map<string, number>();
-  for (const r of results) {
-    const v = (r[field] || "").toString();
-    if (!v) continue;
-    if (field === "topic" && v === "general") continue;
-    counts.set(v, (counts.get(v) ?? 0) + 1);
-  }
-  const arr = Array.from(counts, ([name, value]) => ({
-    name: SOURCE_ICON[name] ?? name.replace(/_/g, " "),
-    value,
-  }));
-  arr.sort((a, b) => b.value - a.value);
-  return arr.slice(0, topN);
+function prettyLabel(s: string) {
+  return SOURCE_ICON[s] ?? s.replace(/_/g, " ");
 }
 
 function ChartTile({ title, children, height = 150 }: { title: string; children: React.ReactNode; height?: number }) {
@@ -321,160 +427,350 @@ function ChartTile({ title, children, height = 150 }: { title: string; children:
   );
 }
 
-function InsightPanel({ results }: { results: LiveResult[] }) {
-  const { t } = useI18n();
-  const sentimentData = buildSentimentData(results);
-  const timelineData = buildTimelineData(results);
-  const sourceData = buildTopBars(results, "source_type");
-  const topicData = buildTopBars(results, "topic");
+const TONE_CARD: Record<string, string> = {
+  good: "border-emerald-200 bg-emerald-50",
+  warn: "border-amber-200 bg-amber-50",
+  danger: "border-red-200 bg-red-50",
+};
+const TONE_VAL: Record<string, string> = {
+  good: "text-emerald-700",
+  warn: "text-amber-700",
+  danger: "text-red-700",
+};
 
-  const total = results.length || 1;
-  const posPct = Math.round(((sentimentData.find((d) => d.key === "positive")?.value ?? 0) / total) * 100);
+function MetricKpi({ k }: { k: KpiCard }) {
+  const tone = k.tone || "";
+  return (
+    <div className={`rounded-xl border p-3 shadow-soft lift ${TONE_CARD[tone] ?? "border-slate-200 bg-white"}`}>
+      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 leading-tight">{k.label}</p>
+      <p className={`text-xl font-bold tabular-nums mt-1 leading-none ${TONE_VAL[tone] ?? "text-slate-800"}`}>{k.value}</p>
+      {k.sub && <p className="text-[10px] text-slate-400 mt-1 leading-tight">{k.sub}</p>}
+    </div>
+  );
+}
+
+// Linked cross-tab: one stacked pos/neutral/neg bar per topic.
+function SentimentByTopic({ rows }: { rows: CrossRow[] }) {
+  if (!rows.length) return <p className="text-xs text-gray-400">No topic data</p>;
+  return (
+    <div className="space-y-2">
+      {rows.map((r) => {
+        const tot = r.total || 1;
+        return (
+          <div key={r.label} className="flex items-center gap-2">
+            <span className="w-24 shrink-0 truncate text-[11px] text-slate-600 capitalize">{prettyLabel(r.label)}</span>
+            <div className="flex-1 h-3 rounded overflow-hidden flex bg-slate-100">
+              <div style={{ width: `${(r.positive / tot) * 100}%` }} className="bg-green-500" title={`positive ${r.positive}`} />
+              <div style={{ width: `${(r.neutral / tot) * 100}%` }} className="bg-slate-400" title={`neutral ${r.neutral}`} />
+              <div style={{ width: `${(r.negative / tot) * 100}%` }} className="bg-red-500" title={`negative ${r.negative}`} />
+            </div>
+            <span className="w-7 text-right text-[11px] tabular-nums text-slate-500">{r.total}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Role-aware metrics dashboard — auto-filled from server-computed `metrics`.
+// Format a DIA MetricValue for display (score 0–100, percent, abs count).
+function fmtMetric(m: MetricValue): string {
+  if (m.kind === "percent") return `${m.value.toFixed(0)}%`;
+  if (m.kind === "score") return m.value.toFixed(0);
+  return m.value.toLocaleString("en-GB");
+}
+
+const FW_LABEL: Record<string, string> = {
+  bpi: "Brand Potential Index",
+  momentum: "Momentum",
+  lifecycle: "Lifecycle",
+  launch_readiness: "Launch readiness",
+};
+
+// DIA framework tier — corpus-based brand intelligence (BPI/SoV/momentum/…).
+function FrameworkPanel({ framework, brandName }: { framework: FrameworkMetrics; brandName: string }) {
+  const order = ["bpi", "momentum", "lifecycle", "launch_readiness"];
+  const bundles = order.filter((k) => framework.bundles[k]).map((k) => [k, framework.bundles[k]] as const);
+  if (!bundles.length) return null;
+  return (
+    <div className="rounded-xl border border-violet-200 bg-gradient-to-br from-violet-500/10 to-transparent p-3.5 shadow-soft">
+      <p className="text-[11px] font-semibold uppercase tracking-wider text-violet-700 mb-2.5 flex items-center gap-1.5">
+        <Briefcase size={12} /> DIA brand intelligence · <span className="text-violet-900">{brandName}</span>
+        <span className="ml-1 normal-case text-[10px] text-violet-400 font-normal">corpus-based · the searched brand</span>
+      </p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        {bundles.map(([key, b]) => {
+          const head = b.metrics[0];
+          const rest = b.metrics.slice(1);
+          return (
+            <div key={key} className="rounded-lg border border-slate-200 bg-white p-3 shadow-soft">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">{FW_LABEL[key] ?? b.name}</p>
+              {head && (
+                <p className="text-2xl font-bold tabular-nums text-violet-700 leading-none mt-1">
+                  {fmtMetric(head)}
+                  {head.confidence != null && (
+                    <span className="ml-1.5 text-[10px] font-normal text-slate-400 align-middle">conf {(head.confidence * 100).toFixed(0)}%</span>
+                  )}
+                </p>
+              )}
+              {rest.length > 0 && (
+                <div className="mt-2 space-y-1">
+                  {rest.map((m) => (
+                    <div key={m.label} className="flex items-center justify-between gap-2 text-[11px]">
+                      <span className="text-slate-500 truncate">{m.label}</span>
+                      <span className="tabular-nums font-medium text-slate-700">{fmtMetric(m)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function InsightPanel({ intel }: { intel: SearchIntelligence }) {
+  const metrics = intel.snapshot;
+  const sentimentData = metrics.sentiment_mix.map((s) => ({ name: s.label, value: s.count, key: s.label }));
+  const total = metrics.total || 1;
+  const posPct = Math.round(((metrics.sentiment_mix.find((s) => s.label === "positive")?.count ?? 0) / total) * 100);
+  // Share-of-voice: reach if present, else volume.
+  const sovData = metrics.channel_reach.slice(0, 6).map((s) => ({ name: prettyLabel(s.label), value: s.value ?? s.count }));
+  const topicData = metrics.topic_mix.filter((s) => s.label !== "general").slice(0, 6).map((s) => ({ name: prettyLabel(s.label), value: s.count }));
+  const reachMode = metrics.reach_total > 0;
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-      {/* Sentiment donut */}
-      <ChartTile title={t("insight.sentiment")}>
-        {sentimentData.every((d) => d.value === 0) ? (
-          <p className="text-xs text-gray-400 flex items-center h-full">{t("insight.empty")}</p>
-        ) : (
-          <div className="relative w-full h-full">
+    <div className="space-y-3">
+      {/* Headline KPI row — combines DIA framework (for resolved brand) + snapshot */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
+        {intel.headline.map((k) => <MetricKpi key={k.key} k={k} />)}
+      </div>
+
+      {/* DIA framework tier — only when the query resolved to a known brand */}
+      {intel.brand_resolved && intel.framework && (
+        <FrameworkPanel framework={intel.framework} brandName={intel.brand_name ?? "brand"} />
+      )}
+
+      {/* Chart grid */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        {/* Sentiment donut */}
+        <ChartTile title="Sentiment">
+          {sentimentData.every((d) => d.value === 0) ? (
+            <p className="text-xs text-gray-400 flex items-center h-full">No data</p>
+          ) : (
+            <div className="relative w-full h-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={sentimentData} innerRadius={36} outerRadius={56} paddingAngle={2} dataKey="value" stroke="none">
+                    {sentimentData.map((entry) => (
+                      <Cell key={entry.key} fill={SENTIMENT_FILL[entry.key] ?? "#94a3b8"} />
+                    ))}
+                  </Pie>
+                  <Tooltip
+                    formatter={(v: number, n: string) => [`${v} mention${v === 1 ? "" : "s"}`, n]}
+                    contentStyle={{ fontSize: 11, padding: "6px 10px", borderRadius: 8, border: "1px solid #e2e8f0", boxShadow: "0 4px 12px rgba(15,23,42,0.08)" }}
+                    itemStyle={{ color: "#e2e8f0" }}
+                    labelStyle={{ color: "#e2e8f0" }}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                <span className="text-xl font-bold text-slate-800 leading-none tabular-nums">{posPct}%</span>
+                <span className="text-[10px] text-slate-400 leading-none mt-0.5 uppercase tracking-wider">positive</span>
+              </div>
+            </div>
+          )}
+        </ChartTile>
+
+        {/* Share of voice (reach) / channel mix */}
+        <ChartTile title={reachMode ? "Share of voice (reach)" : "Channels"}>
+          {sovData.length === 0 ? (
+            <p className="text-xs text-gray-400 flex items-center h-full">No data</p>
+          ) : (
             <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie
-                  data={sentimentData}
-                  innerRadius={36}
-                  outerRadius={56}
-                  paddingAngle={2}
-                  dataKey="value"
-                  stroke="none"
-                >
-                  {sentimentData.map((entry) => (
-                    <Cell key={entry.key} fill={SENTIMENT_FILL[entry.key]} />
-                  ))}
-                </Pie>
+              <BarChart data={sovData} layout="vertical" margin={{ top: 0, right: 8, left: 0, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="srcBar" x1="0" y1="0" x2="1" y2="0">
+                    <stop offset="0%" stopColor="#3f6dff" />
+                    <stop offset="100%" stopColor="#885dfa" />
+                  </linearGradient>
+                </defs>
+                <XAxis type="number" hide />
+                <YAxis dataKey="name" type="category" tick={{ fontSize: 10, fill: "#475569" }} axisLine={false} tickLine={false} width={66} />
                 <Tooltip
-                  formatter={(v: number, n: string) => [`${v} mention${v === 1 ? "" : "s"}`, n]}
+                  formatter={(v: number) => [reachMode ? `${formatCompact(v)} reach` : `${v} mention${v === 1 ? "" : "s"}`, reachMode ? "Reach" : "Count"]}
                   contentStyle={{ fontSize: 11, padding: "6px 10px", borderRadius: 8, border: "1px solid #e2e8f0", boxShadow: "0 4px 12px rgba(15,23,42,0.08)" }}
                 />
-              </PieChart>
+                <Bar dataKey="value" fill="url(#srcBar)" radius={[0, 4, 4, 0]} barSize={12} />
+              </BarChart>
             </ResponsiveContainer>
-            <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-              <span className="text-xl font-bold text-slate-800 leading-none tabular-nums">{posPct}%</span>
-              <span className="text-[10px] text-slate-400 leading-none mt-0.5 uppercase tracking-wider">{t("insight.positive")}</span>
+          )}
+        </ChartTile>
+
+        {/* Topics (excluding 'general') */}
+        <ChartTile title="Topics">
+          {topicData.length === 0 ? (
+            <p className="text-xs text-gray-400 flex items-center h-full">Mostly general</p>
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={topicData} layout="vertical" margin={{ top: 0, right: 8, left: 0, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="topicBar" x1="0" y1="0" x2="1" y2="0">
+                    <stop offset="0%" stopColor="#0ea5e9" />
+                    <stop offset="100%" stopColor="#3f6dff" />
+                  </linearGradient>
+                </defs>
+                <XAxis type="number" hide />
+                <YAxis dataKey="name" type="category" tick={{ fontSize: 10, fill: "#475569" }} axisLine={false} tickLine={false} width={84} />
+                <Tooltip
+                  formatter={(v: number) => [`${v} mention${v === 1 ? "" : "s"}`, "Count"]}
+                  contentStyle={{ fontSize: 11, padding: "6px 10px", borderRadius: 8, border: "1px solid #e2e8f0", boxShadow: "0 4px 12px rgba(15,23,42,0.08)" }}
+                />
+                <Bar dataKey="value" fill="url(#topicBar)" radius={[0, 4, 4, 0]} barSize={12} />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </ChartTile>
+
+        {/* Mentions over time */}
+        <ChartTile title="Mentions over time">
+          {metrics.timeline.length < 2 ? (
+            <p className="text-xs text-gray-400 flex items-center h-full">Not enough dated mentions</p>
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={metrics.timeline} margin={{ top: 5, right: 4, left: -22, bottom: 0 }}>
+                <XAxis dataKey="date" tick={{ fontSize: 9, fill: "#9ca3af" }} tickFormatter={(d: string) => d.slice(5)} axisLine={false} tickLine={false} minTickGap={20} />
+                <YAxis tick={{ fontSize: 9, fill: "#9ca3af" }} axisLine={false} tickLine={false} width={28} allowDecimals={false} />
+                <Tooltip
+                  labelFormatter={(d: string) => d}
+                  contentStyle={{ fontSize: 11, padding: "6px 10px", borderRadius: 8, border: "1px solid #e2e8f0", boxShadow: "0 4px 12px rgba(15,23,42,0.08)" }}
+                />
+                <Area type="monotone" dataKey="positive" stackId="1" stroke="#22c55e" fill="#22c55e" fillOpacity={0.55} strokeWidth={1} />
+                <Area type="monotone" dataKey="neutral" stackId="1" stroke="#94a3b8" fill="#94a3b8" fillOpacity={0.4} strokeWidth={1} />
+                <Area type="monotone" dataKey="negative" stackId="1" stroke="#ef4444" fill="#ef4444" fillOpacity={0.55} strokeWidth={1} />
+              </AreaChart>
+            </ResponsiveContainer>
+          )}
+        </ChartTile>
+      </div>
+
+      {/* Linked cross-tabs */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        <ChartTile title="Sentiment × topic" height={Math.max(110, metrics.sentiment_by_topic.length * 26)}>
+          <SentimentByTopic rows={metrics.sentiment_by_topic} />
+        </ChartTile>
+        <ChartTile title="Where the risk is (by source)" height={Math.max(110, Math.max(1, metrics.risk_by_source.length) * 26)}>
+          {metrics.risk_by_source.length === 0 ? (
+            <p className="text-xs text-gray-400 flex items-center h-full">No risk signals in this search</p>
+          ) : (
+            <div className="space-y-2">
+              {metrics.risk_by_source.map((s) => {
+                const max = Math.max(...metrics.risk_by_source.map((x) => x.count), 1);
+                return (
+                  <div key={s.label} className="flex items-center gap-2">
+                    <span className="w-24 shrink-0 truncate text-[11px] text-slate-600">{prettyLabel(s.label)}</span>
+                    <div className="flex-1 h-2.5 rounded bg-slate-100 overflow-hidden">
+                      <div className="h-full bg-red-500" style={{ width: `${(s.count / max) * 100}%` }} />
+                    </div>
+                    <span className="w-7 text-right text-[11px] tabular-nums text-slate-500">{s.count}</span>
+                  </div>
+                );
+              })}
             </div>
-          </div>
-        )}
-      </ChartTile>
+          )}
+        </ChartTile>
+      </div>
+    </div>
+  );
+}
 
-      {/* Mentions over time */}
-      <ChartTile title={t("insight.timeline")}>
-        {timelineData.length < 2 ? (
-          <p className="text-xs text-gray-400 flex items-center h-full">{t("insight.timeline.empty")}</p>
-        ) : (
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={timelineData} margin={{ top: 5, right: 4, left: -22, bottom: 0 }}>
-              <defs>
-                <linearGradient id="mentionsArea" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#6366f1" stopOpacity={0.45} />
-                  <stop offset="100%" stopColor="#6366f1" stopOpacity={0.02} />
-                </linearGradient>
-              </defs>
-              <XAxis
-                dataKey="date"
-                tick={{ fontSize: 9, fill: "#9ca3af" }}
-                tickFormatter={(d: string) => d.slice(5)}
-                axisLine={false}
-                tickLine={false}
-                minTickGap={20}
-              />
-              <YAxis
-                tick={{ fontSize: 9, fill: "#9ca3af" }}
-                axisLine={false}
-                tickLine={false}
-                width={28}
-                allowDecimals={false}
-              />
-              <Tooltip
-                formatter={(v: number, n: string) => [v, n]}
-                labelFormatter={(d: string) => d}
-                contentStyle={{ fontSize: 11, padding: "6px 10px", borderRadius: 8, border: "1px solid #e2e8f0", boxShadow: "0 4px 12px rgba(15,23,42,0.08)" }}
-              />
-              <Area
-                type="monotone"
-                dataKey="positive"
-                stackId="1"
-                stroke="#22c55e"
-                fill="#22c55e"
-                fillOpacity={0.55}
-                strokeWidth={1}
-              />
-              <Area
-                type="monotone"
-                dataKey="neutral"
-                stackId="1"
-                stroke="#94a3b8"
-                fill="#94a3b8"
-                fillOpacity={0.4}
-                strokeWidth={1}
-              />
-              <Area
-                type="monotone"
-                dataKey="negative"
-                stackId="1"
-                stroke="#ef4444"
-                fill="#ef4444"
-                fillOpacity={0.55}
-                strokeWidth={1}
-              />
-            </AreaChart>
-          </ResponsiveContainer>
-        )}
-      </ChartTile>
+// ── YouTube analytics panel ───────────────────────────────────────────────────
+// Built entirely from the enriched YouTube results (views/likes/comments/channel
+// the connector now fetches via videos.list). Only rendered when ≥1 YouTube
+// result carries metrics.
 
-      {/* Top sources */}
-      <ChartTile title={t("insight.sources")}>
-        {sourceData.length === 0 ? (
-          <p className="text-xs text-gray-400 flex items-center h-full">{t("insight.empty")}</p>
-        ) : (
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={sourceData} layout="vertical" margin={{ top: 0, right: 8, left: 0, bottom: 0 }}>
-              <defs>
-                <linearGradient id="srcBar" x1="0" y1="0" x2="1" y2="0">
-                  <stop offset="0%" stopColor="#3f6dff" />
-                  <stop offset="100%" stopColor="#885dfa" />
-                </linearGradient>
-              </defs>
-              <XAxis type="number" hide />
-              <YAxis
-                dataKey="name"
-                type="category"
-                tick={{ fontSize: 10, fill: "#475569" }}
-                axisLine={false}
-                tickLine={false}
-                width={66}
-              />
-              <Tooltip
-                formatter={(v: number) => [`${v} mention${v === 1 ? "" : "s"}`, "Count"]}
-                contentStyle={{ fontSize: 11, padding: "6px 10px", borderRadius: 8, border: "1px solid #e2e8f0", boxShadow: "0 4px 12px rgba(15,23,42,0.08)" }}
-              />
-              <Bar dataKey="value" fill="url(#srcBar)" radius={[0, 4, 4, 0]} barSize={12} />
-            </BarChart>
-          </ResponsiveContainer>
-        )}
-      </ChartTile>
+interface YtVideo {
+  title: string;
+  channel: string;
+  url?: string;
+  thumbnail?: string;
+  views: number;
+  likes: number;
+  comments: number;
+  published_at?: string;
+}
 
-      {/* Top topics */}
-      <ChartTile title={t("insight.topics")}>
-        {topicData.length === 0 ? (
-          <p className="text-xs text-gray-400 flex items-center h-full">{t("insight.empty")}</p>
-        ) : (
+function extractYouTube(results: LiveResult[]): YtVideo[] {
+  return results
+    .filter((r) => r.source_type === "youtube" && r.meta)
+    .map((r) => ({
+      title: r.meta?.title || r.text.slice(0, 80),
+      channel: r.meta?.channel_title || "—",
+      url: r.source_url,
+      thumbnail: r.meta?.thumbnail,
+      views: r.meta?.views ?? r.engagement ?? 0,
+      likes: r.meta?.likes ?? 0,
+      comments: r.meta?.comments ?? 0,
+      published_at: r.published_at,
+    }));
+}
+
+function YouTubeAnalyticsPanel({ results }: { results: LiveResult[] }) {
+  const { t } = useI18n();
+  const videos = extractYouTube(results);
+  if (videos.length === 0) return null;
+
+  const totalViews = videos.reduce((a, v) => a + v.views, 0);
+
+  // Top channels by aggregate views.
+  const channelMap = new Map<string, number>();
+  for (const v of videos) channelMap.set(v.channel, (channelMap.get(v.channel) ?? 0) + v.views);
+  const topChannels = Array.from(channelMap, ([name, value]) => ({ name, value }))
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 5);
+
+  // Views over time (by ISO date).
+  const dateMap = new Map<string, number>();
+  for (const v of videos) {
+    if (!v.published_at) continue;
+    const d = new Date(v.published_at);
+    if (isNaN(d.getTime())) continue;
+    const key = d.toISOString().slice(0, 10);
+    dateMap.set(key, (dateMap.get(key) ?? 0) + v.views);
+  }
+  const viewsOverTime = Array.from(dateMap, ([date, views]) => ({ date, views }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  // Most-engaged = likes + comments weighted, falling back to views.
+  const mostEngaged = [...videos]
+    .sort((a, b) => (b.likes + b.comments * 2 || b.views) - (a.likes + a.comments * 2 || a.views))
+    .slice(0, 5);
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-rose-500/10 via-transparent to-transparent shadow-soft overflow-hidden">
+      <div className="flex items-center gap-2.5 px-4 py-3 border-b border-slate-100">
+        <span className="shrink-0 w-8 h-8 rounded-lg bg-gradient-to-br from-red-500 to-rose-600 flex items-center justify-center shadow-soft">
+          <Youtube size={16} className="text-white" />
+        </span>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-slate-800">{t("yt.analytics")}</p>
+          <p className="text-[11px] text-slate-400">
+            {videos.length} {t("yt.videos")} · {formatCompact(totalViews)} {t("yt.views")}
+          </p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 p-4">
+        {/* Top channels */}
+        <ChartTile title={t("yt.topChannels")} height={150}>
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={topicData} layout="vertical" margin={{ top: 0, right: 8, left: 0, bottom: 0 }}>
+            <BarChart data={topChannels} layout="vertical" margin={{ top: 0, right: 8, left: 0, bottom: 0 }}>
               <defs>
-                <linearGradient id="topicBar" x1="0" y1="0" x2="1" y2="0">
-                  <stop offset="0%" stopColor="#0ea5e9" />
-                  <stop offset="100%" stopColor="#3f6dff" />
+                <linearGradient id="ytChannelBar" x1="0" y1="0" x2="1" y2="0">
+                  <stop offset="0%" stopColor="#ef4444" />
+                  <stop offset="100%" stopColor="#f43f5e" />
                 </linearGradient>
               </defs>
               <XAxis type="number" hide />
@@ -485,16 +781,88 @@ function InsightPanel({ results }: { results: LiveResult[] }) {
                 axisLine={false}
                 tickLine={false}
                 width={84}
+                tickFormatter={(s: string) => (s.length > 12 ? s.slice(0, 11) + "…" : s)}
               />
               <Tooltip
-                formatter={(v: number) => [`${v} mention${v === 1 ? "" : "s"}`, "Count"]}
+                formatter={(v: number) => [`${formatCompact(v)} ${t("yt.views")}`, "Views"]}
                 contentStyle={{ fontSize: 11, padding: "6px 10px", borderRadius: 8, border: "1px solid #e2e8f0", boxShadow: "0 4px 12px rgba(15,23,42,0.08)" }}
               />
-              <Bar dataKey="value" fill="url(#topicBar)" radius={[0, 4, 4, 0]} barSize={12} />
+              <Bar dataKey="value" fill="url(#ytChannelBar)" radius={[0, 4, 4, 0]} barSize={12} />
             </BarChart>
           </ResponsiveContainer>
-        )}
-      </ChartTile>
+        </ChartTile>
+
+        {/* Views over time */}
+        <ChartTile title={t("yt.viewsOverTime")} height={150}>
+          {viewsOverTime.length < 2 ? (
+            <p className="text-xs text-gray-400 flex items-center h-full">{t("insight.timeline.empty")}</p>
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={viewsOverTime} margin={{ top: 5, right: 4, left: -18, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="ytViewsArea" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#ef4444" stopOpacity={0.45} />
+                    <stop offset="100%" stopColor="#ef4444" stopOpacity={0.02} />
+                  </linearGradient>
+                </defs>
+                <XAxis
+                  dataKey="date"
+                  tick={{ fontSize: 9, fill: "#9ca3af" }}
+                  tickFormatter={(d: string) => d.slice(5)}
+                  axisLine={false}
+                  tickLine={false}
+                  minTickGap={20}
+                />
+                <YAxis
+                  tick={{ fontSize: 9, fill: "#9ca3af" }}
+                  axisLine={false}
+                  tickLine={false}
+                  width={34}
+                  tickFormatter={(v: number) => formatCompact(v)}
+                />
+                <Tooltip
+                  formatter={(v: number) => [`${formatCompact(v)} ${t("yt.views")}`, "Views"]}
+                  contentStyle={{ fontSize: 11, padding: "6px 10px", borderRadius: 8, border: "1px solid #e2e8f0", boxShadow: "0 4px 12px rgba(15,23,42,0.08)" }}
+                />
+                <Area type="monotone" dataKey="views" stroke="#ef4444" fill="url(#ytViewsArea)" strokeWidth={1.5} />
+              </AreaChart>
+            </ResponsiveContainer>
+          )}
+        </ChartTile>
+
+        {/* Most-engaged videos */}
+        <div className="bg-white border border-slate-200 rounded-xl p-3.5 flex flex-col shadow-soft">
+          <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-2">{t("yt.mostEngaged")}</p>
+          <ul className="space-y-2 overflow-hidden">
+            {mostEngaged.map((v, i) => (
+              <li key={i} className="flex items-center gap-2 min-w-0">
+                <span className="shrink-0 text-[10px] font-bold text-slate-400 w-4">{i + 1}</span>
+                {v.thumbnail ? (
+                  <img src={v.thumbnail} alt="" className="shrink-0 w-10 h-7 rounded object-cover bg-slate-100" loading="lazy" />
+                ) : (
+                  <span className="shrink-0 w-10 h-7 rounded bg-slate-100 flex items-center justify-center"><PlayCircle size={13} className="text-slate-400" /></span>
+                )}
+                <div className="flex-1 min-w-0">
+                  <a
+                    href={v.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block text-xs font-medium text-slate-700 hover:text-red-600 truncate"
+                    title={v.title}
+                  >
+                    {v.title}
+                  </a>
+                  <span className="flex items-center gap-2 text-[10px] text-slate-400">
+                    <span className="flex items-center gap-0.5"><Eye size={10} /> {formatCompact(v.views)}</span>
+                    <span className="flex items-center gap-0.5"><ThumbsUp size={10} /> {formatCompact(v.likes)}</span>
+                    <span className="flex items-center gap-0.5"><MessageSquare size={10} /> {formatCompact(v.comments)}</span>
+                  </span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
     </div>
   );
 }
@@ -523,7 +891,7 @@ function SourceNoticesBanner({ notices }: { notices: SourceNotice[] }) {
           <div className="flex-1 min-w-0">
             <span className="font-semibold">{SOURCE_ICON[n.source] ?? n.source}</span>
             {n.status === "missing_key" && <span> — needs an API key</span>}
-            {n.status === "error" && <span> — upstream error</span>}
+            {n.status === "error" && !n.detail && <span> — upstream error</span>}
             {n.status === "empty" && <span> — no matches</span>}
             {n.detail && <span className="opacity-75"> · {n.detail}</span>}
           </div>
@@ -535,8 +903,33 @@ function SourceNoticesBanner({ notices }: { notices: SourceNotice[] }) {
 
 // ── Risk callout banner — bridges Search → AE Review ─────────────────────────
 
-function RiskCallout({ count }: { count: number }) {
+function RiskCallout({ results, query }: { results: LiveResult[]; query: string }) {
   const { t } = useI18n();
+  const navigate = useNavigate();
+  const count = results.length;
+
+  // Live Search is no-write; an explicit human escalation persists the flagged
+  // results into the pharmacovigilance review queue, then routes there.
+  const escalate = useMutation({
+    mutationFn: () =>
+      apiClient
+        .post("/adverse-events/from-search", {
+          query,
+          results: results.map((r) => ({
+            source_type: r.source_type,
+            source_url: r.source_url,
+            text: r.text,
+            country: r.country,
+            language: r.language,
+            published_at: r.published_at,
+            risk_type: r.risk_type,
+            query: r.query,
+          })),
+        })
+        .then((r) => r.data),
+    onSuccess: () => navigate("/adverse-events"),
+  });
+
   if (count <= 0) return null;
   return (
     <div className="relative flex items-start gap-4 bg-gradient-to-br from-red-50 via-red-50/70 to-orange-50/40 border border-red-200 rounded-2xl p-4 shadow-soft animate-fade-up overflow-hidden">
@@ -550,13 +943,18 @@ function RiskCallout({ count }: { count: number }) {
           {count === 1 ? t("risk.headline.one") : t("risk.headline", { count })}
         </p>
         <p className="text-xs text-red-700/90 mt-0.5">{t("risk.subline")}</p>
+        {escalate.isError && (
+          <p className="text-xs text-red-600 mt-1 font-medium">{t("risk.escalateError")}</p>
+        )}
       </div>
-      <Link
-        to="/adverse-events"
-        className="shrink-0 inline-flex items-center gap-1 px-3.5 py-2 text-xs font-semibold text-white bg-gradient-to-br from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 rounded-lg shadow-soft transition-all"
+      <button
+        onClick={() => escalate.mutate()}
+        disabled={escalate.isPending}
+        className="shrink-0 inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-gradient-to-br from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 rounded-lg shadow-soft transition-all disabled:opacity-60"
       >
-        {t("risk.cta")}
-      </Link>
+        {escalate.isPending ? <Loader2 size={13} className="animate-spin" /> : null}
+        {escalate.isPending ? t("risk.escalating") : t("risk.cta")}
+      </button>
     </div>
   );
 }
@@ -568,7 +966,7 @@ function loadAISaved() {
   catch { return {}; }
 }
 
-function AIModePanel({ bridge }: { bridge: BridgePayload | null }) {
+function AIModePanel({ role }: { role: Role }) {
   const { t, locale } = useI18n();
   const _aiSaved = loadAISaved();
   const [query, setQuery] = useState<string>(_aiSaved.query ?? "");
@@ -576,13 +974,12 @@ function AIModePanel({ bridge }: { bridge: BridgePayload | null }) {
   const sourceRefs = useRef<Array<HTMLDivElement | null>>([]);
   const [highlightIdx, setHighlightIdx] = useState<number | null>(null);
 
-  const mutation = useMutation<AIResponse, unknown, { q: string; sources?: AISource[] }>({
-    mutationFn: async ({ q, sources }) => {
+  const mutation = useMutation<AIResponse, unknown, { q: string }>({
+    mutationFn: async ({ q }) => {
       const cfg = { timeout: 30_000 };
-      if (sources && sources.length) {
-        return apiClient.post("/search/ai", { q, sources, lang: locale }, cfg).then((r) => r.data);
-      }
-      return apiClient.get("/search/ai", { params: { q, lang: locale }, ...cfg }).then((r) => r.data);
+      // AI mode is independent — always its own GET research call, never fed
+      // Live Search results.
+      return apiClient.get("/search/ai", { params: { q, lang: locale, role }, ...cfg }).then((r) => r.data);
     },
     onSuccess: (resp) => setData(resp),
   });
@@ -593,22 +990,10 @@ function AIModePanel({ bridge }: { bridge: BridgePayload | null }) {
     } catch {}
   }, [query, data]);
 
-  // When the parent hands us a bridge payload, trigger the POST flow.
-  // We dedupe via the payload identity so rapid tab switches don't refire.
-  const lastBridgeRef = useRef<BridgePayload | null>(null);
-  useEffect(() => {
-    if (!bridge) return;
-    if (lastBridgeRef.current === bridge) return;
-    lastBridgeRef.current = bridge;
-    setQuery(bridge.q);
-    pushRecent(bridge.q);
-    mutation.mutate({ q: bridge.q, sources: bridge.sources });
-  }, [bridge, mutation]);
-
-  const runQuery = (q: string, sources?: AISource[]) => {
+  const runQuery = (q: string) => {
     setQuery(q);
     pushRecent(q);
-    mutation.mutate({ q, sources });
+    mutation.mutate({ q });
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -681,7 +1066,7 @@ function AIModePanel({ bridge }: { bridge: BridgePayload | null }) {
       {/* Loading — pulse + skeleton answer */}
       {isFetching && (
         <div className="space-y-4">
-          <div className="relative bg-gradient-to-br from-accent-50 via-white to-accent-50/40 border border-accent-100 rounded-2xl p-5 flex items-start gap-4 overflow-hidden">
+          <div className="relative bg-gradient-to-br from-accent-500/10 via-transparent to-accent-500/5 border border-accent-100 rounded-2xl p-5 flex items-start gap-4 overflow-hidden">
             <span className="absolute inset-x-0 top-0 h-0.5 bg-gradient-to-r from-accent-400 via-accent-500 to-brand-400 animate-pulse" />
             <div className="relative shrink-0 mt-0.5">
               <Loader2 size={22} className="animate-spin text-accent-600" />
@@ -689,11 +1074,7 @@ function AIModePanel({ bridge }: { bridge: BridgePayload | null }) {
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-sm font-semibold text-accent-800">{t("ai.analysingFor", { q: query })}</p>
-              <p className="text-xs text-accent-600 mt-1">
-                {mutation.variables?.sources?.length
-                  ? t("ai.bridgeFromN", { n: mutation.variables.sources.length })
-                  : t("ai.fetchHint")}
-              </p>
+              <p className="text-xs text-accent-600 mt-1">{t("ai.fetchHint")}</p>
             </div>
           </div>
           <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-3">
@@ -848,7 +1229,7 @@ function AIModePanel({ bridge }: { bridge: BridgePayload | null }) {
 
 // ── Live Search panel ─────────────────────────────────────────────────────────
 
-function LiveSearchPanel({ onAskAI }: { onAskAI: (payload: BridgePayload) => void }) {
+function LiveSearchPanel({ role }: { role: Role }) {
   const { t } = useI18n();
   const _saved = loadSaved();
   const [query, setQuery] = useState<string>(_saved.query ?? "");
@@ -865,11 +1246,11 @@ function LiveSearchPanel({ onAskAI }: { onAskAI: (payload: BridgePayload) => voi
   }, [query, submitted, sources, filterSentiment, period]);
 
   const { data, isFetching, error } = useQuery<LiveResponse>({
-    queryKey: ["live-search", submitted, sources.join(","), period],
+    queryKey: ["live-search", submitted, sources.join(","), period, role],
     queryFn: () =>
       apiClient
         .get("/search/live", {
-          params: { q: submitted, sources: sources.join(","), period },
+          params: { q: submitted, sources: sources.join(","), period, role },
           timeout: 30_000,
         })
         .then((r) => r.data),
@@ -975,7 +1356,7 @@ function LiveSearchPanel({ onAskAI }: { onAskAI: (payload: BridgePayload) => voi
 
       {isFetching && (
         <div className="space-y-3">
-          <div className="relative bg-gradient-to-br from-brand-50 via-white to-brand-50/40 border border-brand-100 rounded-2xl p-4 flex items-center gap-3 overflow-hidden">
+          <div className="relative bg-gradient-to-br from-brand-500/10 via-transparent to-brand-500/5 border border-brand-100 rounded-2xl p-4 flex items-center gap-3 overflow-hidden">
             <span className="absolute inset-x-0 top-0 h-0.5 bg-gradient-to-r from-brand-400 via-brand-500 to-accent-400 animate-pulse" />
             <Loader2 size={20} className="animate-spin text-brand-600 shrink-0" />
             <div className="flex-1 min-w-0">
@@ -1026,26 +1407,6 @@ function LiveSearchPanel({ onAskAI }: { onAskAI: (payload: BridgePayload) => voi
                   {riskCount} {riskCount === 1 ? t("risk.flagsShort.one") : t("risk.flagsShort")}
                 </span>
               )}
-              {displayResults.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => onAskAI({
-                    q: data.query,
-                    sources: displayResults.slice(0, 8).map((r) => ({
-                      source_type: r.source_type,
-                      source_url: r.source_url,
-                      text: r.text,
-                      sentiment: r.sentiment,
-                      published_at: r.published_at,
-                      country: r.country,
-                    })),
-                  })}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-accent-700 bg-accent-50 hover:bg-accent-100 border border-accent-200 rounded-lg shadow-soft transition-colors"
-                  title={t("live.askAi.title")}
-                >
-                  <Wand2 size={13} /> {t("live.askAi")}
-                </button>
-              )}
             </div>
           </div>
 
@@ -1078,9 +1439,11 @@ function LiveSearchPanel({ onAskAI }: { onAskAI: (payload: BridgePayload) => voi
             />
           )}
 
-          {total > 0 && <InsightPanel results={data.results} />}
+          {total > 0 && data.metrics && <InsightPanel intel={data.metrics} />}
 
-          <RiskCallout count={riskCount} />
+          <YouTubeAnalyticsPanel results={data.results} />
+
+          <RiskCallout results={(data?.results ?? []).filter((r) => r.is_risk)} query={data?.query ?? submitted} />
 
           {data.source_notices && data.source_notices.length > 0 && (
             <SourceNoticesBanner notices={data.source_notices} />
@@ -1193,7 +1556,28 @@ function LiveSearchPanel({ onAskAI }: { onAskAI: (payload: BridgePayload) => voi
                         : ""}
                     </span>
                   </div>
-                  <p className="text-sm text-slate-700 leading-relaxed">{r.text}</p>
+                  {r.source_type === "youtube" && r.meta ? (
+                    <div className="flex gap-3">
+                      {r.meta.thumbnail && (
+                        <a href={r.source_url} target="_blank" rel="noopener noreferrer" className="shrink-0">
+                          <img src={r.meta.thumbnail} alt="" loading="lazy" className="w-28 h-[63px] rounded-lg object-cover bg-slate-100" />
+                        </a>
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm text-slate-700 leading-relaxed line-clamp-2">{r.meta.title || r.text}</p>
+                        {r.meta.channel_title && (
+                          <p className="text-xs text-slate-400 mt-0.5 truncate">{r.meta.channel_title}</p>
+                        )}
+                        <div className="flex items-center gap-3 mt-1.5 text-xs text-slate-500">
+                          <span className="flex items-center gap-1"><Eye size={12} className="text-red-500" /> {formatCompact(r.meta.views)}</span>
+                          <span className="flex items-center gap-1"><ThumbsUp size={12} /> {formatCompact(r.meta.likes)}</span>
+                          <span className="flex items-center gap-1"><MessageSquare size={12} /> {formatCompact(r.meta.comments)}</span>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-slate-700 leading-relaxed">{r.text}</p>
+                  )}
                   {r.source_url && (
                     <a
                       href={r.source_url}
@@ -1201,7 +1585,7 @@ function LiveSearchPanel({ onAskAI }: { onAskAI: (payload: BridgePayload) => voi
                       rel="noopener noreferrer"
                       className="inline-flex items-center gap-1 text-xs text-brand-600 hover:text-brand-800 hover:underline font-medium"
                     >
-                      <ExternalLink size={11} /> View original source
+                      <ExternalLink size={11} /> {r.source_type === "youtube" ? t("yt.watch") : "View original source"}
                     </a>
                   )}
                 </div>
@@ -1239,12 +1623,23 @@ function LiveSearchPanel({ onAskAI }: { onAskAI: (payload: BridgePayload) => voi
 export default function Search() {
   const { t } = useI18n();
   const [activeTab, setActiveTab] = useState<Tab>("search");
-  const [bridge, setBridge] = useState<BridgePayload | null>(null);
 
-  const handleAskAI = (payload: BridgePayload) => {
-    // New object identity each call so AIModePanel's effect detects it as fresh
-    setBridge(payload);
-    setActiveTab("ai");
+  // The lens follows the logged-in account role. Admins may additionally "view
+  // as" any persona (persisted), so one account can demo all three. Non-admins
+  // are pinned to their own role — the backend enforces this regardless.
+  const [loggedInRole] = useState<Role>(getLoggedInRole);
+  const isAdmin = loggedInRole === "admin";
+  const [lensRole, setLensRole] = useState<Role>(() => {
+    if (!isAdmin) return loggedInRole;
+    try {
+      const s = localStorage.getItem(LENS_STORAGE_KEY);
+      if (isRole(s)) return s;
+    } catch {}
+    return "admin";
+  });
+  const changeLens = (r: Role) => {
+    setLensRole(r);
+    try { localStorage.setItem(LENS_STORAGE_KEY, r); } catch {}
   };
 
   // ⌘K / Ctrl+K focuses the active tab's search input
@@ -1267,19 +1662,35 @@ export default function Search() {
   // Keep panels mounted so neither loses internal state when switching tabs
   return (
     <div className="space-y-0 max-w-5xl animate-fade-up">
-      {/* Hero header */}
-      <div className="relative mb-6 rounded-2xl overflow-hidden border border-slate-200/70 bg-white shadow-soft">
-        <div className="absolute inset-0 bg-gradient-to-br from-brand-50 via-white to-accent-50/60 pointer-events-none" />
-        <div className="absolute inset-0 bg-grid-soft bg-grid-soft opacity-40 pointer-events-none [mask-image:radial-gradient(ellipse_at_top_right,black_20%,transparent_60%)]" />
+      {/* Hero header — clean white banner to match the white rail */}
+      <div className="relative mb-6 rounded-2xl overflow-hidden bg-white shadow-soft ring-1 ring-slate-200">
+        <span className="absolute inset-x-0 top-0 h-0.5 bg-gradient-to-r from-brand-400 via-accent-400 to-brand-400" />
+        <div className="absolute inset-0 bg-grid-soft opacity-[0.05] pointer-events-none [mask-image:radial-gradient(ellipse_at_top_right,black_10%,transparent_65%)]" />
+        <div className="absolute -right-16 -top-20 w-72 h-72 rounded-full bg-brand-500/10 blur-3xl pointer-events-none" />
         <div className="relative px-6 py-5 flex items-start gap-4">
-          <div className="shrink-0 w-11 h-11 rounded-xl bg-gradient-to-br from-brand-500 to-accent-500 flex items-center justify-center shadow-elevated">
+          <div className="shrink-0 w-11 h-11 rounded-xl bg-gradient-to-br from-brand-500 to-accent-500 flex items-center justify-center shadow-elevated ring-1 ring-black/5">
             <SearchIcon size={20} className="text-white" strokeWidth={2.4} />
           </div>
           <div className="flex-1 min-w-0">
             <h1 className="text-2xl font-bold text-slate-900 tracking-tight">{t("page.title")}</h1>
             <p className="text-sm text-slate-500 mt-0.5 max-w-2xl">{t("page.subtitle")}</p>
           </div>
+          {isAdmin && (
+            <div className="shrink-0 self-center hidden sm:block">
+              <RoleSwitcher value={lensRole} onChange={changeLens} />
+            </div>
+          )}
         </div>
+      </div>
+
+      {/* Active role lens — what this query is being tailored toward */}
+      <div className="mb-6 space-y-2">
+        <LensBanner role={lensRole} />
+        {isAdmin && (
+          <div className="sm:hidden">
+            <RoleSwitcher value={lensRole} onChange={changeLens} />
+          </div>
+        )}
       </div>
 
       <div className="flex gap-1 border-b border-slate-200 mb-8">
@@ -1320,10 +1731,10 @@ export default function Search() {
       </div>
 
       <div className={activeTab === "search" ? "" : "hidden"}>
-        <LiveSearchPanel onAskAI={handleAskAI} />
+        <LiveSearchPanel role={lensRole} />
       </div>
       <div className={activeTab === "ai" ? "" : "hidden"}>
-        <AIModePanel bridge={bridge} />
+        <AIModePanel role={lensRole} />
       </div>
     </div>
   );

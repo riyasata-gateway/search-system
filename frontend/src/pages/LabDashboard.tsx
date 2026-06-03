@@ -1,12 +1,16 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiClient } from "../api/client";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend,
 } from "recharts";
-import { TrendingUp, MessageSquare, AlertTriangle, Search, Loader2, ExternalLink } from "lucide-react";
+import {
+  TrendingUp, MessageSquare, AlertTriangle, Search, Loader2, ExternalLink,
+  Megaphone, Briefcase, Activity, Target, Rocket, Radio,
+} from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { useAuth } from "../hooks/useAuth";
 
 const SENTIMENT_COLOURS: Record<string, string> = {
   positive: "#22c55e",
@@ -26,50 +30,57 @@ const SOURCE_COLOURS: Record<string, string> = {
   licensed_api: "#06b6d4",
 };
 
-function extractDomain(url: string | null | undefined): string | null {
-  if (!url) return null;
-  try {
-    return new URL(url).hostname.replace(/^www\./, "");
-  } catch {
-    return null;
-  }
-}
-
-function useDashboard() {
+// ── data hooks (all brand-scoped via ?brand_id) ──────────────────────────────
+function useMyBrands() {
   return useQuery({
-    queryKey: ["lab-dashboard"],
-    queryFn: () => apiClient.get("/lab/dashboard").then((r) => r.data),
+    queryKey: ["lab-my-brands"],
+    queryFn: () => apiClient.get("/lab/my-brands").then((r) => r.data),
   });
 }
 
-function useWeeklySummary() {
+function brandParam(brandId: number | null) {
+  return brandId ? { brand_id: brandId } : {};
+}
+
+function useDashboard(brandId: number | null) {
   return useQuery({
-    queryKey: ["weekly-summary"],
-    queryFn: () => apiClient.get("/lab/weekly-summary").then((r) => r.data),
+    queryKey: ["lab-dashboard", brandId],
+    queryFn: () => apiClient.get("/lab/dashboard", { params: brandParam(brandId) }).then((r) => r.data),
+    enabled: brandId != null,
+  });
+}
+
+function useWeeklySummary(brandId: number | null) {
+  return useQuery({
+    queryKey: ["weekly-summary", brandId],
+    queryFn: () => apiClient.get("/lab/weekly-summary", { params: brandParam(brandId) }).then((r) => r.data),
     staleTime: 3_600_000,
+    enabled: brandId != null,
   });
 }
 
-function useSentimentBreakdown() {
+function useSentimentBreakdown(brandId: number | null) {
   return useQuery({
-    queryKey: ["sentiment-breakdown"],
-    queryFn: () => apiClient.get("/lab/sentiment-breakdown").then((r) => r.data),
+    queryKey: ["sentiment-breakdown", brandId],
+    queryFn: () => apiClient.get("/lab/sentiment-breakdown", { params: brandParam(brandId) }).then((r) => r.data),
+    enabled: brandId != null,
   });
 }
 
-function useTopicClusters() {
+function useTopicClusters(brandId: number | null) {
   return useQuery({
-    queryKey: ["topic-clusters"],
-    queryFn: () => apiClient.get("/lab/topic-clusters").then((r) => r.data),
+    queryKey: ["topic-clusters", brandId],
+    queryFn: () => apiClient.get("/lab/topic-clusters", { params: brandParam(brandId) }).then((r) => r.data),
+    enabled: brandId != null,
   });
 }
 
-function useCompetitorComparison(groupId: number | null) {
+function useIntel(path: string, brandId: number | null, enabled: boolean) {
   return useQuery({
-    queryKey: ["competitor-comparison", groupId],
-    queryFn: () =>
-      apiClient.get("/lab/competitor-comparison", { params: { competitor_group_id: groupId } }).then((r) => r.data),
-    enabled: !!groupId,
+    queryKey: ["intel", path, brandId],
+    queryFn: () => apiClient.get(`/intelligence/${path}/${brandId}`).then((r) => r.data),
+    enabled: enabled && brandId != null,
+    retry: false,
   });
 }
 
@@ -86,91 +97,246 @@ function useLiveCompetitor(brand: string, enabled: boolean) {
   });
 }
 
+const headline = (bundle: any) => bundle?.metrics?.[0] ?? null;
+const fmt = (v: any) => (v == null ? "—" : typeof v === "number" ? Math.round(v) : v);
+
+// ── small presentational helpers ─────────────────────────────────────────────
+function KpiCard({ label, value, icon: Icon, colour, suffix }: any) {
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 p-5">
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-sm text-gray-500">{label}</span>
+        <Icon size={18} className={colour} />
+      </div>
+      <p className="text-3xl font-bold text-gray-900">
+        {value}
+        {suffix && <span className="text-base font-medium text-gray-400 ml-1">{suffix}</span>}
+      </p>
+    </div>
+  );
+}
+
+function GaugeBar({ label, value, unit }: { label: string; value: number | null; unit?: string }) {
+  const pct = value == null ? 0 : Math.max(0, Math.min(100, value));
+  const colour = pct >= 66 ? "#22c55e" : pct >= 40 ? "#f59e0b" : "#ef4444";
+  return (
+    <div>
+      <div className="flex justify-between text-sm mb-1">
+        <span className="text-gray-600">{label}</span>
+        <span className="font-semibold text-gray-900 tabular-nums">{fmt(value)}{unit ? ` ${unit}` : ""}</span>
+      </div>
+      <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+        <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: colour }} />
+      </div>
+    </div>
+  );
+}
+
 export default function LabDashboard() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const role = user?.role ?? "brand_manager";
+
+  // marketing → reach/resonance view; brand_manager → market/risk view; admin → toggle.
+  const [adminView, setAdminView] = useState<"marketing" | "brand">("brand");
+  const view = role === "marketing" ? "marketing" : role === "brand_manager" ? "brand" : adminView;
+  const isMarketing = view === "marketing";
+
+  const { data: myBrands } = useMyBrands();
+  const [brandId, setBrandId] = useState<number | null>(null);
+  useEffect(() => {
+    if (brandId == null && myBrands?.length) {
+      const withData = myBrands.find((b: any) => b.has_data);
+      setBrandId((withData ?? myBrands[0]).id);
+    }
+  }, [myBrands, brandId]);
+
   const [competitorInput, setCompetitorInput] = useState("");
   const [competitorQuery, setCompetitorQuery] = useState("");
-  const { data: dashboard, isLoading } = useDashboard();
-  const { data: summary } = useWeeklySummary();
-  const { data: sentiment } = useSentimentBreakdown();
-  const { data: topics } = useTopicClusters();
+
+  const { data: dashboard, isLoading } = useDashboard(brandId);
+  const { data: summary } = useWeeklySummary(brandId);
+  const { data: sentiment } = useSentimentBreakdown(brandId);
+  const { data: topics } = useTopicClusters(brandId);
+
+  // role-specific intelligence
+  const { data: bpi } = useIntel("bpi", brandId, !isMarketing);
+  const { data: launch } = useIntel("launch-readiness", brandId, !isMarketing);
+  const { data: momentum } = useIntel("momentum/brand", brandId, true);
+  const { data: keyMsg } = useIntel("key-messages", brandId, isMarketing);
+
   const { data: liveCompetitor, isFetching: competitorFetching } = useLiveCompetitor(competitorQuery, competitorQuery.length >= 2);
 
-  if (isLoading) return <div className="text-gray-500 text-sm">Loading lab dashboard…</div>;
+  const activeBrand = (myBrands ?? []).find((b: any) => b.id === brandId);
 
-  const sentimentPieData = (sentiment ?? []).map((s: any) => ({
-    name: s.topic,
-    value: s.count,
-  }));
-
+  const sentimentPieData = (sentiment ?? []).map((s: any) => ({ name: s.topic, value: s.count }));
   const topicBarData = (topics ?? []).slice(0, 8).map((t: any) => ({
     name: t.topic?.replace("_", " "),
     count: t.count,
-    pct: t.percent,
   }));
 
-  const liveResults = (liveCompetitor?.results ?? []) as any[];
-  const liveActive = !!liveCompetitor;
-  const liveRiskCount = liveResults.filter((r: any) => r.is_risk).length;
-  const liveSourceBreakdown = liveResults.reduce<Record<string, number>>((acc, r: any) => {
-    if (r.source_type) acc[r.source_type] = (acc[r.source_type] ?? 0) + 1;
-    return acc;
-  }, {});
-
-  const totalMentions = liveActive ? (liveCompetitor.total ?? 0) : (dashboard?.total_mentions ?? 0);
-  const riskMentions = liveActive ? liveRiskCount : (dashboard?.risk_alert_count ?? 0);
-  const sourceBreakdown: Record<string, number> = liveActive
-    ? liveSourceBreakdown
-    : (dashboard?.source_breakdown ?? {});
-
-  const sourceGroups = liveActive
-    ? Object.entries(
-        liveResults.reduce<Record<string, any[]>>((acc, r: any) => {
-          if (!r.source_type) return acc;
-          (acc[r.source_type] ||= []).push(r);
-          return acc;
-        }, {})
-      ).map(([source_type, items]) => {
-        const domainCounts = items.reduce<Record<string, number>>((acc, r: any) => {
-          const d = extractDomain(r.source_url);
-          if (d) acc[d] = (acc[d] ?? 0) + 1;
-          return acc;
-        }, {});
-        const domains = Object.entries(domainCounts)
-          .sort((a, b) => b[1] - a[1])
-          .map(([domain, count]) => ({ domain, count }));
-        return { source_type, total: items.length, domains };
-      })
-    : Object.entries(sourceBreakdown).map(([source_type, total]) => ({
-        source_type,
-        total: Number(total),
-        domains: [] as { domain: string; count: number }[],
-      }));
-  sourceGroups.sort((a, b) => b.total - a.total);
+  const totalMentions = dashboard?.total_mentions ?? 0;
+  const riskMentions = dashboard?.risk_alert_count ?? 0;
+  const sentBreak = dashboard?.sentiment_breakdown ?? {};
+  const sentTotal = Object.values(sentBreak).reduce((a: number, b: any) => a + Number(b), 0) || 1;
+  const positivePct = Math.round(((sentBreak.positive ?? 0) / sentTotal) * 100);
+  const sourceBreakdown: Record<string, number> = dashboard?.source_breakdown ?? {};
+  const sourceGroups = Object.entries(sourceBreakdown)
+    .map(([source_type, total]) => ({ source_type, total: Number(total) }))
+    .sort((a, b) => b.total - a.total);
   const totalAcrossSources = sourceGroups.reduce((sum, g) => sum + g.total, 0) || 1;
+
+  const bpiHead = headline(bpi);
+  const launchHead = headline(launch);
+  const momentumHead = headline(momentum);
+  // No mentions in window → the score is the neutral fallback, not a real reading.
+  const bpiInsufficient = (bpiHead?.sample_size ?? 0) === 0;
+  const launchInsufficient = (launchHead?.sample_size ?? 0) === 0;
+  const keyHead = headline(keyMsg);
+  const winning = keyMsg?.context?.winning ?? [];
+  const losing = keyMsg?.context?.losing ?? [];
+
+  if (isLoading && brandId != null) return <div className="text-gray-500 text-sm">Loading dashboard…</div>;
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">Lab / Brand Intelligence</h1>
-        <p className="text-sm text-gray-500">What are people saying about your brand?</p>
+      {/* Header: role-framed title + brand switcher + (admin) view toggle */}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+            {isMarketing ? <Megaphone size={22} className="text-amber-500" /> : <Briefcase size={22} className="text-purple-600" />}
+            {isMarketing ? "Marketing — Reach & Resonance" : "Brand — Market & Risk"}
+          </h1>
+          <p className="text-sm text-gray-500">
+            {isMarketing
+              ? "Buzz, sentiment, message resonance and reach for your brand."
+              : "Brand potential, launch readiness, demand and brand-risk signals."}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {role === "admin" && (
+            <div className="flex rounded-lg border border-gray-300 overflow-hidden text-sm">
+              <button
+                onClick={() => setAdminView("marketing")}
+                className={`px-3 py-2 flex items-center gap-1.5 ${isMarketing ? "bg-amber-500 text-white" : "bg-white text-gray-600"}`}
+              >
+                <Megaphone size={14} /> Marketing
+              </button>
+              <button
+                onClick={() => setAdminView("brand")}
+                className={`px-3 py-2 flex items-center gap-1.5 ${!isMarketing ? "bg-purple-600 text-white" : "bg-white text-gray-600"}`}
+              >
+                <Briefcase size={14} /> Brand
+              </button>
+            </div>
+          )}
+          <select
+            value={brandId ?? ""}
+            onChange={(e) => setBrandId(Number(e.target.value))}
+            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+          >
+            {(myBrands ?? []).map((b: any) => (
+              <option key={b.id} value={b.id}>
+                {b.name}{b.has_data ? "" : " (no data yet)"}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
 
+      {activeBrand && !activeBrand.has_data && (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-2.5 text-sm text-amber-800">
+          No mentions linked to <strong>{activeBrand.name}</strong> yet — this brand will populate as the corpus grows.
+        </div>
+      )}
+
+      {/* Role-specific KPI row */}
       <div className="grid grid-cols-3 gap-4">
-        {[
-          { label: "Total Mentions", value: totalMentions, icon: MessageSquare, colour: "text-blue-600" },
-          { label: "Risk Mentions", value: riskMentions, icon: AlertTriangle, colour: "text-orange-500" },
-          { label: "Period", value: dashboard?.period ?? "30d", icon: TrendingUp, colour: "text-green-600" },
-        ].map(({ label, value, icon: Icon, colour }) => (
-          <div key={label} className="bg-white rounded-xl border border-gray-200 p-5">
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-sm text-gray-500">{label}</span>
-              <Icon size={18} className={colour} />
-            </div>
-            <p className="text-3xl font-bold text-gray-900">{value}</p>
-          </div>
-        ))}
+        {isMarketing ? (
+          <>
+            <KpiCard label="Total Reach (mentions)" value={totalMentions} icon={Radio} colour="text-amber-500" />
+            <KpiCard label="Positive Sentiment" value={positivePct} suffix="%" icon={MessageSquare} colour="text-green-600" />
+            <KpiCard label="Buzz Momentum" value={fmt(momentumHead?.value)} suffix="/100" icon={Activity} colour="text-blue-600" />
+          </>
+        ) : (
+          <>
+            <KpiCard label="Brand Potential Index" value={bpiInsufficient ? "n/a" : fmt(bpiHead?.value)} suffix={bpiInsufficient ? "" : "/100"} icon={Target} colour="text-purple-600" />
+            <KpiCard label="Launch Readiness" value={launchInsufficient ? "n/a" : fmt(launchHead?.value)} suffix={launchInsufficient ? "" : "/100"} icon={Rocket} colour="text-indigo-600" />
+            <KpiCard label="Risk Mentions" value={riskMentions} icon={AlertTriangle} colour="text-orange-500" />
+          </>
+        )}
       </div>
+
+      {/* Role-specific intelligence panel */}
+      {isMarketing ? (
+        <div className="grid grid-cols-2 gap-6">
+          <div className="bg-white rounded-xl border border-gray-200 p-5">
+            <h2 className="text-base font-semibold text-gray-900 mb-1">Message Resonance</h2>
+            <p className="text-xs text-gray-400 mb-4">{keyHead?.label ?? "Which topics land with audiences"}</p>
+            {winning.length === 0 && losing.length === 0 ? (
+              <p className="text-sm text-gray-400">Not enough classified mentions to score message resonance yet.</p>
+            ) : (
+              <div className="space-y-3">
+                {winning.slice(0, 4).map((w: any, i: number) => (
+                  <div key={`w${i}`} className="flex items-center justify-between text-sm">
+                    <span className="text-gray-700">✅ {String(w.topic ?? w).replace("_", " ")}</span>
+                    <span className="text-green-600 font-medium">winning</span>
+                  </div>
+                ))}
+                {losing.slice(0, 4).map((l: any, i: number) => (
+                  <div key={`l${i}`} className="flex items-center justify-between text-sm">
+                    <span className="text-gray-700">⚠ {String(l.topic ?? l).replace("_", " ")}</span>
+                    <span className="text-red-500 font-medium">losing</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="bg-white rounded-xl border border-gray-200 p-5">
+            <h2 className="text-base font-semibold text-gray-900 mb-4">Buzz & Reach</h2>
+            <div className="space-y-3">
+              <GaugeBar label="Buzz momentum" value={momentumHead?.value ?? null} unit="/100" />
+              <GaugeBar label="Positive sentiment" value={positivePct} unit="%" />
+              <div className="pt-2 text-xs text-gray-400">
+                Reach across {sourceGroups.length} channels · {totalMentions} mentions analysed
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-6">
+          <div className="bg-white rounded-xl border border-gray-200 p-5">
+            <h2 className="text-base font-semibold text-gray-900 mb-4">Brand Potential Index</h2>
+            <div className="space-y-3">
+              {bpiInsufficient ? (
+                <p className="text-sm text-gray-400">Insufficient data — no mentions linked to this brand in the last 365 days, so a Brand Potential Index can't be scored yet.</p>
+              ) : (
+                (bpi?.metrics ?? []).map((m: any, i: number) => (
+                  <GaugeBar key={i} label={m.label} value={m.value} unit={m.unit === "%" ? "%" : ""} />
+                ))
+              )}
+              {!bpi && <p className="text-sm text-gray-400">No BPI computed yet.</p>}
+            </div>
+          </div>
+          <div className="bg-white rounded-xl border border-gray-200 p-5">
+            <h2 className="text-base font-semibold text-gray-900 mb-4">Launch & Demand</h2>
+            <div className="space-y-3">
+              {launchInsufficient ? (
+                <p className="text-sm text-gray-400">Launch readiness needs recent mentions to score — none in window yet.</p>
+              ) : (
+                <GaugeBar label={launchHead?.label ?? "Launch readiness"} value={launchHead?.value ?? null} unit="/100" />
+              )}
+              <GaugeBar label="Demand momentum" value={momentumHead?.value ?? null} unit="/100" />
+              <div className="pt-1 flex items-center justify-between text-sm">
+                <span className="text-gray-600">Open brand-risk / adverse-event queue</span>
+                <button onClick={() => navigate("/adverse-events")} className="text-purple-600 hover:underline text-xs flex items-center gap-1">
+                  Review <ExternalLink size={11} />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {summary && (
         <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-100 rounded-xl p-5">
@@ -183,6 +349,7 @@ export default function LabDashboard() {
         </div>
       )}
 
+      {/* Shared analytics: sentiment + topics */}
       <div className="grid grid-cols-2 gap-6">
         {sentimentPieData.length > 0 && (
           <div className="bg-white rounded-xl border border-gray-200 p-5">
@@ -202,7 +369,7 @@ export default function LabDashboard() {
 
         {topicBarData.length > 0 && (
           <div className="bg-white rounded-xl border border-gray-200 p-5">
-            <h2 className="text-base font-semibold text-gray-900 mb-4">Topic Clusters</h2>
+            <h2 className="text-base font-semibold text-gray-900 mb-4">{isMarketing ? "Conversation Topics" : "Topic Clusters"}</h2>
             <ResponsiveContainer width="100%" height={220}>
               <BarChart data={topicBarData} layout="vertical">
                 <XAxis type="number" tick={{ fontSize: 11 }} />
@@ -219,15 +386,9 @@ export default function LabDashboard() {
         )}
       </div>
 
+      {/* Source / channel breakdown */}
       <div className="bg-white rounded-xl border border-gray-200 p-5">
-        <div className="flex items-baseline justify-between mb-4">
-          <h2 className="text-base font-semibold text-gray-900">Source Breakdown</h2>
-          {liveActive && (
-            <span className="text-xs text-gray-400">
-              {sourceGroups.reduce((s, g) => s + g.domains.length, 0)} unique domains across {sourceGroups.length} channels
-            </span>
-          )}
-        </div>
+        <h2 className="text-base font-semibold text-gray-900 mb-4">{isMarketing ? "Channel Mix" : "Source Breakdown"}</h2>
         {sourceGroups.length > 0 ? (
           <div className="space-y-3">
             {sourceGroups.map((g) => {
@@ -241,55 +402,26 @@ export default function LabDashboard() {
                       {g.source_type.replace("_", " ")}
                     </span>
                     <span className="text-xs text-gray-500 tabular-nums">
-                      <span className="font-semibold text-gray-700">{g.total}</span> mention{g.total === 1 ? "" : "s"} · {pct.toFixed(0)}%
+                      <span className="font-semibold text-gray-700">{g.total}</span> · {pct.toFixed(0)}%
                     </span>
                   </div>
-                  <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden mb-2">
+                  <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
                     <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: colour }} />
                   </div>
-                  {g.domains.length > 0 ? (
-                    <div className="flex gap-1.5 flex-wrap">
-                      {g.domains.slice(0, 6).map((d) => (
-                        <a
-                          key={d.domain}
-                          href={`https://${d.domain}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="group flex items-center gap-1.5 text-xs px-2 py-1 bg-gray-50 hover:bg-blue-50 hover:border-blue-200 border border-gray-200 rounded transition-colors"
-                          title={`${d.count} mention${d.count === 1 ? "" : "s"} from ${d.domain}`}
-                        >
-                          <img
-                            src={`https://www.google.com/s2/favicons?domain=${d.domain}&sz=16`}
-                            alt=""
-                            className="w-3.5 h-3.5"
-                            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-                          />
-                          <span className="text-gray-700 group-hover:text-blue-700">{d.domain}</span>
-                          <span className="text-gray-400 tabular-nums">·{d.count}</span>
-                        </a>
-                      ))}
-                      {g.domains.length > 6 && (
-                        <span className="text-xs px-2 py-1 text-gray-400">+{g.domains.length - 6} more</span>
-                      )}
-                    </div>
-                  ) : (
-                    !liveActive && (
-                      <p className="text-xs text-gray-300 italic">Run a competitor search above to see actual sites.</p>
-                    )
-                  )}
                 </div>
               );
             })}
           </div>
         ) : (
-          <p className="text-sm text-gray-400">No source data yet — search a competitor brand below to populate.</p>
+          <p className="text-sm text-gray-400">No source data for this brand yet.</p>
         )}
       </div>
 
+      {/* Live competitor intelligence (shared) */}
       <div className="bg-white rounded-xl border border-gray-200">
         <div className="px-5 py-4 border-b border-gray-100">
           <h2 className="text-base font-semibold text-gray-900">Live Competitor Intelligence</h2>
-          <p className="text-xs text-gray-400 mt-0.5">Search any competitor brand or drug to see what people are saying about it right now — sentiment, topics, risk signals.</p>
+          <p className="text-xs text-gray-400 mt-0.5">Search any competitor brand or drug to see what people are saying right now.</p>
         </div>
         <div className="px-5 py-4 space-y-3">
           <form
@@ -312,70 +444,43 @@ export default function LabDashboard() {
             </button>
           </form>
 
-          {competitorFetching && (
-            <div className="flex items-center gap-2 py-3 text-sm text-blue-600">
-              <Loader2 size={16} className="animate-spin" /> Fetching live competitor data…
-            </div>
-          )}
-
           {!competitorFetching && liveCompetitor && (
-            <>
-              {liveCompetitor.total === 0 ? (
-                <p className="text-sm text-gray-400 py-3 text-center">No results for "{competitorQuery}".</p>
-              ) : (
-                <div>
-                  <div className="flex items-center gap-4 py-2 border-b border-gray-100 mb-2">
-                    <div className="text-center">
-                      <p className="text-2xl font-bold text-gray-900">{liveCompetitor.total}</p>
-                      <p className="text-xs text-gray-400">articles (30d)</p>
-                    </div>
-                    <div className="flex gap-3">
-                      {["positive","neutral","negative"].map((s) => {
-                        const cnt = (liveCompetitor.results as any[]).filter((r: any) => r.sentiment === s).length;
-                        const pct = liveCompetitor.total ? Math.round((cnt / liveCompetitor.total) * 100) : 0;
-                        const col = s === "positive" ? "text-green-600" : s === "negative" ? "text-red-500" : "text-gray-500";
-                        return cnt > 0 ? (
-                          <div key={s} className="text-center">
-                            <p className={`text-lg font-bold ${col}`}>{pct}%</p>
-                            <p className="text-xs text-gray-400 capitalize">{s}</p>
-                          </div>
-                        ) : null;
-                      })}
-                      {(liveCompetitor.results as any[]).filter((r: any) => r.is_risk).length > 0 && (
-                        <div className="text-center">
-                          <p className="text-lg font-bold text-red-600">{(liveCompetitor.results as any[]).filter((r: any) => r.is_risk).length}</p>
-                          <p className="text-xs text-gray-400">risk flags</p>
-                        </div>
+            liveCompetitor.total === 0 ? (
+              <p className="text-sm text-gray-400 py-3 text-center">No results for "{competitorQuery}".</p>
+            ) : (
+              <div>
+                <div className="flex items-center gap-4 py-2 border-b border-gray-100 mb-2">
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-gray-900">{liveCompetitor.total}</p>
+                    <p className="text-xs text-gray-400">articles (30d)</p>
+                  </div>
+                  <button
+                    onClick={() => navigate(`/search?q=${encodeURIComponent(competitorQuery)}`)}
+                    className="ml-auto text-xs text-blue-600 hover:underline flex items-center gap-1"
+                  >
+                    Full search <ExternalLink size={11} />
+                  </button>
+                </div>
+                <div className="divide-y divide-gray-50 max-h-64 overflow-y-auto">
+                  {(liveCompetitor.results as any[]).slice(0, 6).map((r: any, i: number) => (
+                    <div key={i} className="py-2.5 flex items-start gap-2">
+                      <span className={`shrink-0 text-xs px-1.5 py-0.5 rounded font-medium mt-0.5 ${r.sentiment === "positive" ? "bg-green-100 text-green-700" : r.sentiment === "negative" ? "bg-red-100 text-red-700" : "bg-gray-100 text-gray-500"}`}>
+                        {r.sentiment}
+                      </span>
+                      <p className="text-sm text-gray-700 leading-snug line-clamp-2 flex-1">{r.text}</p>
+                      {r.source_url && (
+                        <a href={r.source_url} target="_blank" rel="noopener noreferrer" className="shrink-0 text-gray-300 hover:text-blue-500">
+                          <ExternalLink size={12} />
+                        </a>
                       )}
                     </div>
-                    <button
-                      onClick={() => navigate(`/search?q=${encodeURIComponent(competitorQuery)}`)}
-                      className="ml-auto text-xs text-blue-600 hover:underline flex items-center gap-1"
-                    >
-                      Full search <ExternalLink size={11} />
-                    </button>
-                  </div>
-                  <div className="divide-y divide-gray-50 max-h-64 overflow-y-auto">
-                    {(liveCompetitor.results as any[]).slice(0, 6).map((r: any, i: number) => (
-                      <div key={i} className="py-2.5 flex items-start gap-2">
-                        <span className={`shrink-0 text-xs px-1.5 py-0.5 rounded font-medium mt-0.5 ${r.sentiment === "positive" ? "bg-green-100 text-green-700" : r.sentiment === "negative" ? "bg-red-100 text-red-700" : "bg-gray-100 text-gray-500"}`}>
-                          {r.sentiment}
-                        </span>
-                        <p className="text-sm text-gray-700 leading-snug line-clamp-2 flex-1">{r.text}</p>
-                        {r.source_url && (
-                          <a href={r.source_url} target="_blank" rel="noopener noreferrer" className="shrink-0 text-gray-300 hover:text-blue-500">
-                            <ExternalLink size={12} />
-                          </a>
-                        )}
-                      </div>
-                    ))}
-                  </div>
+                  ))}
                 </div>
-              )}
-            </>
+              </div>
+            )
           )}
 
-          {!competitorFetching && !liveCompetitor && !competitorQuery && (
+          {!competitorFetching && !liveCompetitor && (
             <p className="text-xs text-gray-300 text-center py-4">Enter a competitor brand above to see live public sentiment.</p>
           )}
         </div>

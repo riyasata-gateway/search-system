@@ -60,6 +60,8 @@ class BPIResult:
     bpi_score: float
     components: BPIComponents
     window_days: int
+    adoption_is_proxy: bool = False
+    sample_size: int = 0  # mentions about THIS brand in-window — the honest "do we have data?" signal
 
     def to_bundle(self) -> MetricBundle:
         return MetricBundle(
@@ -67,9 +69,11 @@ class BPIResult:
             metrics=[
                 as_score(self.bpi_score, "Brand Potential Index",
                          confidence=self.components.confidence,
+                         sample_size=self.sample_size,
                          comparison_window=f"last {self.window_days}d"),
                 as_percent(self.components.awareness * 100, "Awareness"),
-                as_percent(self.components.adoption * 100, "Adoption"),
+                as_percent(self.components.adoption * 100,
+                           "Adoption (proxy)" if self.adoption_is_proxy else "Adoption"),
                 as_percent(self.components.sentiment * 100, "Sentiment"),
                 as_percent(self.components.market_fit * 100, "Market fit"),
             ],
@@ -78,6 +82,7 @@ class BPIResult:
                 "entity_id": self.entity_id,
                 "entity_name": self.entity_name,
                 "country": self.country,
+                "adoption_is_proxy": self.adoption_is_proxy,
             },
         )
 
@@ -178,6 +183,53 @@ def _sales_velocity(
     return int(db.execute(q).scalar() or 0)
 
 
+def _proxy_adoption_signals(
+    db: Session,
+    brand_ids: List[int],
+    since: date,
+    country: Optional[str],
+) -> dict[int, int]:
+    """Proxy uptake signal per brand when pharmacy_sales is unavailable.
+
+    Equal-weighted blend of real signals we DO have (confirmed design):
+        purchase_intent mentions + review-source mentions (app_store/trustpilot)
+        + recommendation mentions (intent OR topic)
+    Returned per brand; the caller turns it into a share vs category peers, just
+    like Awareness. Documented proxy — never fabricated sales.
+    """
+    if not brand_ids:
+        return {}
+    from models.mention import Intent, Topic
+    review_sources = ("app_store", "trustpilot")
+    q = (
+        select(MentionEntity.entity_id, Mention.source_type,
+               MentionClassification.intent, MentionClassification.topic)
+        .join(Mention, Mention.id == MentionEntity.mention_id)
+        .outerjoin(MentionClassification,
+                   MentionClassification.mention_id == Mention.id)
+        .where(
+            MentionEntity.entity_type == "brand",
+            MentionEntity.entity_id.in_(brand_ids),
+            Mention.published_at >= since,
+            Mention.is_deleted.is_(False),
+        )
+    )
+    if country:
+        q = q.where(Mention.country == country)
+    signals: dict[int, int] = {bid: 0 for bid in brand_ids}
+    for row in db.execute(q).fetchall():
+        bid = int(row.entity_id)
+        s = 0
+        if row.intent == Intent.purchase_intent:
+            s += 1
+        if (row.source_type or "").lower() in review_sources:
+            s += 1
+        if row.intent == Intent.recommendation or row.topic == Topic.recommendation:
+            s += 1
+        signals[bid] = signals.get(bid, 0) + s
+    return signals
+
+
 def _category_peers(db: Session, brand: Brand) -> List[int]:
     """Brand IDs sharing at least one product category with the target."""
     cat_ids_q = (
@@ -225,10 +277,19 @@ def compute_bpi(
     peer_sales = {pid: _sales_velocity(db, pid, since, country) for pid in peers}
     my_sales = peer_sales.get(brand_id, 0)
     sales_total = sum(peer_sales.values())
+    adoption_is_proxy = False
     if sales_total:
         adoption = my_sales / sales_total
     else:
-        adoption = 0.5
+        # No pharmacy_sales wired → fall back to the documented proxy uptake
+        # signal (purchase intent + reviews + advocacy), shared vs peers.
+        proxy = _proxy_adoption_signals(db, peers, since, country)
+        proxy_total = sum(proxy.values())
+        if proxy_total:
+            adoption = proxy.get(brand_id, 0) / proxy_total
+            adoption_is_proxy = True
+        else:
+            adoption = 0.5
 
     # ── Sentiment ────────────────────────────────────────────────────────────
     sentiment, sentiment_n = _engagement_weighted_sentiment(
@@ -270,6 +331,8 @@ def compute_bpi(
         bpi_score=round(comps.to_score(), 2),
         components=comps,
         window_days=window_days,
+        adoption_is_proxy=adoption_is_proxy,
+        sample_size=my_mentions,
     )
 
 

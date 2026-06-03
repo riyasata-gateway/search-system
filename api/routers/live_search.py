@@ -6,11 +6,33 @@ import asyncio
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from pydantic import BaseModel
 
 from api.dependencies import get_current_user
+from core.logging import get_logger
+from core.role_lens import resolve_role, role_label, role_sort_key
+from core.search_metrics import SearchIntelligence
+from intelligence.search_intelligence import build_search_intelligence, flatten_for_db
+from core.search_audit import log_search_query
+from models.search_audit import SearchMode
 from models.user import User
+
+logger = get_logger(__name__)
+
+
+def _enqueue_corpus_ingest(payload: list) -> None:
+    """Governed async enrichment: hand live-search results to the connector
+    ingest pipeline (DPIA-gated, dedup, classification downstream). Best-effort —
+    a missing/unavailable Celery broker must never affect the search response."""
+    from core.config import settings
+    if not settings.DPIA_PROCESSING_ENABLED or not payload:
+        return
+    try:
+        from ingestion.tasks import ingest_live_results
+        ingest_live_results.delay(payload)
+    except Exception as exc:  # broker down, serialization, etc.
+        logger.warning("live_ingest_enqueue_failed", error=str(exc))
 
 router = APIRouter()
 
@@ -87,6 +109,9 @@ class LiveSearchResult(BaseModel):
     is_risk: bool
     engagement: Optional[int]
     query: str
+    # Source-specific extras (e.g. YouTube views/likes/comments/channel/thumbnail).
+    # Generic dict so a new connector can attach its own fields without a schema bump.
+    meta: Optional[dict] = None
 
 
 class SourceNotice(BaseModel):
@@ -104,6 +129,9 @@ class LiveSearchResponse(BaseModel):
     source_notices: List[SourceNotice]
     expanded_terms: List[str]
     elapsed_ms: int
+    role: str
+    role_label: str
+    metrics: SearchIntelligence
 
 
 # ── connector runners — all blocking I/O in threads to keep event loop free ──
@@ -194,23 +222,52 @@ async def _run_pubmed(keywords: List[str], countries: List[str], languages: List
         return []
 
 
+# YouTube search.list costs 100 quota units/call (default 10k/day). Cross-lingual
+# expansion (up to 8 terms) × multiple countries would burn the whole day's quota
+# in a handful of searches, so we cap what YouTube sees and cache results.
+_YT_MAX_KEYWORDS = 2
+_YT_MAX_COUNTRIES = 1
+_YT_CACHE_TTL = 1800.0  # 30 min — repeat demo queries don't re-hit the API
+_yt_cache: dict[tuple, tuple[float, list]] = {}
+
+
 async def _run_youtube(keywords: List[str], countries: List[str], languages: List[str]):
-    # YouTube connector blocks on googleapiclient internally — wrap in executor
-    # the same way the reddit runner does so the event loop stays free.
+    from ingestion.connectors.youtube import YouTubeConnector, YouTubeQuotaError
+
+    c = YouTubeConnector()
+    if not c.is_available():
+        return []
+
+    # Quota frugality: only the primary term(s) + first country reach the API.
+    kws = keywords[: _YT_MAX_KEYWORDS]
+    cs = countries[: _YT_MAX_COUNTRIES] or ["FR"]
+
+    cache_key = (tuple(kws), tuple(cs))
+    hit = _yt_cache.get(cache_key)
+    if hit and (time.time() - hit[0]) < _YT_CACHE_TTL:
+        return hit[1]
+
     try:
-        from ingestion.connectors.youtube import YouTubeConnector
-        c = YouTubeConnector()
-        if not c.is_available():
-            return []
-        return await asyncio.wait_for(
+        res = await asyncio.wait_for(
             asyncio.get_event_loop().run_in_executor(
                 None,
-                lambda: asyncio.run(c.collect(keywords, countries, languages)),
+                lambda: asyncio.run(c.collect(kws, cs, languages)),
             ),
             timeout=12.0,
         )
-    except Exception:
+    except YouTubeQuotaError:
+        # Let it propagate → surfaces as an explicit "error" source-notice.
+        raise
+    except (asyncio.TimeoutError, Exception) as exc:
+        # Quota errors can also bubble up wrapped; re-raise those, swallow the rest.
+        if "quota" in str(exc).lower() or "ratelimitexceeded" in str(exc).lower():
+            raise YouTubeQuotaError(
+                "YouTube Data API daily quota exhausted — resets ~09:00 CET (midnight US-Pacific)."
+            )
         return []
+
+    _yt_cache[cache_key] = (time.time(), res)
+    return res
 
 
 async def _run_clinical_trials(keywords: List[str], countries: List[str], languages: List[str]):
@@ -230,6 +287,64 @@ async def _run_openfda(keywords: List[str], countries: List[str], languages: Lis
         return await asyncio.wait_for(
             OpenFDAConnector().collect(keywords, countries, languages),
             timeout=14.0,
+        )
+    except Exception:
+        return []
+
+
+async def _run_eudravigilance(keywords: List[str], countries: List[str], languages: List[str]):
+    try:
+        from ingestion.connectors.eudravigilance import EudraVigilanceConnector
+        return await asyncio.wait_for(
+            EudraVigilanceConnector().collect(keywords, countries, languages),
+            timeout=14.0,
+        )
+    except Exception:
+        return []
+
+
+async def _run_doctissimo(keywords: List[str], countries: List[str], languages: List[str]):
+    try:
+        from ingestion.connectors.doctissimo import DoctissimoConnector
+        c = DoctissimoConnector()
+        if not c.is_available():
+            return []
+        return await asyncio.wait_for(
+            c.collect(keywords, countries, languages),
+            timeout=20.0,
+        )
+    except Exception:
+        return []
+
+
+async def _run_belgium_health(keywords: List[str], countries: List[str], languages: List[str]):
+    try:
+        from ingestion.connectors.belgium_health_data import BelgiumHealthDataConnector
+        return await asyncio.wait_for(
+            BelgiumHealthDataConnector().collect(keywords, countries, languages),
+            timeout=15.0,
+        )
+    except Exception:
+        return []
+
+
+async def _run_ansm(keywords: List[str], countries: List[str], languages: List[str]):
+    try:
+        from ingestion.connectors.ansm import ANSMConnector
+        return await asyncio.wait_for(
+            ANSMConnector().collect(keywords, countries, languages),
+            timeout=15.0,
+        )
+    except Exception:
+        return []
+
+
+async def _run_belgium_hcp(keywords: List[str], countries: List[str], languages: List[str]):
+    try:
+        from ingestion.connectors.belgium_hcp import BelgiumHCPConnector
+        return await asyncio.wait_for(
+            BelgiumHCPConnector().collect(keywords, countries, languages),
+            timeout=18.0,
         )
     except Exception:
         return []
@@ -264,11 +379,11 @@ _PERIOD_DAYS = {"7d": 7, "30d": 30, "180d": 180, "365d": 365}
 
 
 _LOCALE_MAP = [
-    ("en", "GB", "GB:en"),
-    ("fr", "FR", "FR:fr"),
-    ("nl", "NL", "NL:nl"),
-    ("de", "DE", "DE:de"),
     ("fr", "BE", "BE:fr"),
+    ("nl", "BE", "BE:nl"),
+    ("de", "BE", "BE:de"),
+    ("fr", "FR", "FR:fr"),
+    ("en", "BE", "BE:en"),
 ]
 
 
@@ -398,11 +513,22 @@ _SOURCE_RUNNERS = {
     "youtube": _run_youtube,
     "clinical_trials": _run_clinical_trials,
     "openfda": _run_openfda,
+    "eudravigilance": _run_eudravigilance,
     "app_store": _run_app_store,
     "trustpilot": _run_trustpilot,
+    "doctissimo": _run_doctissimo,
+    "belgium_health": _run_belgium_health,
+    "belgium_hcp": _run_belgium_hcp,
+    "ansm": _run_ansm,
 }
 
-DEFAULT_SOURCES = ["news", "rss", "wikipedia", "pubmed"]
+# Belgium-first default: EU pharmacovigilance + Belgian health-data (FAGG/AFMPS
+# shortages) + French ANSM shortages/safety + the multilingual baseline.
+# openFDA stays available opt-in via ?sources=openfda.
+DEFAULT_SOURCES = [
+    "news", "rss", "wikipedia", "pubmed", "youtube",
+    "eudravigilance", "belgium_health", "ansm",
+]
 
 
 # Sources that need a key to function. The endpoint surfaces this in
@@ -421,10 +547,12 @@ def _missing_key_reason(source: str) -> Optional[str]:
 # ── endpoint ──────────────────────────────────────────────────────────────────
 @router.get("/live", response_model=LiveSearchResponse)
 async def live_search(
+    background_tasks: BackgroundTasks,
     q: str = Query(..., min_length=2, description="Brand, drug, or keyword to search live"),
     sources: Optional[str] = Query(None, description="Comma-separated: news,rss,forum,google_trends,reddit,wikipedia,pubmed,youtube,clinical_trials,openfda,app_store,trustpilot"),
-    languages: Optional[str] = Query("fr,nl,en,de", description="Comma-separated language codes"),
+    languages: Optional[str] = Query("fr,nl,de,en", description="Comma-separated language codes (BE: fr,nl,de + FR: fr; en for fallback)"),
     period: str = Query("all", description="Time window: 7d, 30d, 180d, 365d, all"),
+    role: Optional[str] = Query(None, description="Role lens: pharmacist, marketing, brand_manager, admin (admins may view-as any; others locked to own role)"),
     current_user: User = Depends(get_current_user),
 ):
     import time
@@ -432,10 +560,17 @@ async def live_search(
     from processing.query_expansion import expand_query
     t0 = time.time()
 
-    kw_list = expand_query(q.strip(), max_terms=4)
-    lang_list = [l.strip() for l in (languages or "fr,nl,en,de").split(",") if l.strip()]
+    lens = resolve_role(current_user, role)
+
+    # max_terms=8 so a brand query surfaces its full EU variant set (e.g.
+    # paracetamol → Doliprane, Dafalgan, Efferalgan, Panadol, Perdolan, ben-u-ron),
+    # not just the canonical INN + translations. Trade-off: more keywords means a
+    # wider news fan-out (keywords × locales), so latency rises modestly — tune
+    # here if live search gets too slow on the default source set.
+    kw_list = expand_query(q.strip(), max_terms=8)
+    lang_list = [l.strip() for l in (languages or "fr,nl,de,en").split(",") if l.strip()]
     source_list = [s.strip() for s in (sources or ",".join(DEFAULT_SOURCES)).split(",") if s.strip()]
-    country_list = ["GB", "FR", "NL", "DE", "BE"]
+    country_list = ["BE", "FR"]
 
     since_dt = None
     since_date_str = None
@@ -509,12 +644,21 @@ async def live_search(
             is_risk=risk.risk_type != "none",
             engagement=rm.engagement_count,
             query=rm.query_used,
+            meta=(rm.metadata or None),
         ))
 
     if since_dt is not None:
         results = [r for r in results if r.published_at is None or r.published_at >= since_dt]
 
-    results.sort(key=lambda r: (r.is_risk, r.engagement or 0), reverse=True)
+    # Role-aware ordering via deterministic priority TIERS (no score, no
+    # engagement). Risk flags always stay on top (patient safety first for every
+    # persona); then the role's source tier, then its topic tier, then freshness.
+    # A pharmacist surfaces official safety/supply sources while marketing surfaces
+    # reach/buzz — and because engagement no longer enters the sort, the role lens
+    # is actually visible instead of being swamped by view counts.
+    results.sort(
+        key=lambda r: role_sort_key(lens, r.source_type, r.topic, r.is_risk, r.published_at),
+    )
 
     # Build per-source notices so the UI can explain zero-result sources.
     # Count rows in `results` (post-dedupe, post-period-filter) per source.
@@ -526,9 +670,10 @@ async def live_search(
     notices: List[SourceNotice] = []
     for s in runner_source_order:
         if s in per_source_errors:
+            err = per_source_errors[s]
+            detail = err[:200] if "quota" in err.lower() else f"upstream error: {err[:200]}"
             notices.append(SourceNotice(
-                source=s, status="error", count=0,
-                detail=f"upstream error: {per_source_errors[s][:200]}",
+                source=s, status="error", count=0, detail=detail,
             ))
             continue
         count_final = final_per_source[s]
@@ -551,6 +696,78 @@ async def live_search(
                 ),
             ))
 
+    elapsed_ms = int((time.time() - t0) * 1000)
+
+    # Per-search DIA intelligence (snapshot + framework for the resolved brand),
+    # computed off-thread because the framework modules use a sync DB session.
+    si = await asyncio.get_event_loop().run_in_executor(
+        None,
+        build_search_intelligence,
+        [
+            {
+                "source_type": r.source_type,
+                "country": r.country,
+                "language": r.language,
+                "published_at": r.published_at,
+                "sentiment": r.sentiment,
+                "topic": r.topic,
+                "risk_type": r.risk_type,
+                "engagement": r.engagement,
+            }
+            for r in results
+        ],
+        lens, q, kw_list, "live",
+    )
+
+    background_tasks.add_task(
+        log_search_query,
+        mode=SearchMode.live,
+        q=q,
+        user_id=current_user.id,
+        lang=None,
+        role=lens,
+        sources_requested=source_list,
+        expanded_terms=kw_list,
+        filters={"period": period, "languages": lang_list, "countries": country_list},
+        metrics=flatten_for_db(si),
+        results=[
+            {
+                "rank": i,
+                "source_type": r.source_type,
+                "source_url": r.source_url,
+                "snippet": r.text,
+                "sentiment": r.sentiment,
+                "topic": r.topic,
+                "risk_type": r.risk_type,
+                "country": r.country,
+                "language": r.language,
+                "published_at": r.published_at,
+            }
+            for i, r in enumerate(results, start=1)
+        ],
+        elapsed_ms=elapsed_ms,
+    )
+
+    # Governed async corpus enrichment — route the same results through the
+    # connector ingest pipeline so they become classified `mentions` over time.
+    background_tasks.add_task(
+        _enqueue_corpus_ingest,
+        [
+            {
+                "source_type": r.source_type,
+                "source_url": r.source_url,
+                "country": r.country,
+                "language": r.language,
+                "published_at": r.published_at.isoformat() if r.published_at else None,
+                "raw_text": r.text,
+                "query_used": r.query or q,
+                "engagement_count": r.engagement,
+                "metadata": r.meta or {},
+            }
+            for r in results
+        ],
+    )
+
     return LiveSearchResponse(
         query=q,
         total=len(results),
@@ -558,5 +775,8 @@ async def live_search(
         sources_queried=source_list,
         source_notices=notices,
         expanded_terms=kw_list,
-        elapsed_ms=int((time.time() - t0) * 1000),
+        elapsed_ms=elapsed_ms,
+        role=lens,
+        role_label=role_label(lens),
+        metrics=si,
     )

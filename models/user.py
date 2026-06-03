@@ -10,7 +10,8 @@ from models.base import Base, TimestampMixin
 
 class UserRole(str, enum.Enum):
     pharmacist = "pharmacist"
-    lab_user = "lab_user"
+    marketing = "marketing"
+    brand_manager = "brand_manager"
     admin = "admin"
 
 
