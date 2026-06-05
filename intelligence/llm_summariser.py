@@ -10,23 +10,37 @@ from core.logging import get_logger
 
 logger = get_logger(__name__)
 
-WEEKLY_SUMMARY_PROMPT = """You are a pharmaceutical brand intelligence analyst. 
-Provide a concise executive summary (3-5 sentences) in English based on the data below.
-Focus on: what changed this week, key drivers of change, competitor activity, and any risks.
-Do NOT make medical claims. Do NOT recommend specific treatments or dosages.
-Do NOT generate promotional content for prescription medicines.
-Flag any adverse event mentions for human review — do not make conclusions on them.
+WEEKLY_SUMMARY_PROMPT = """You are a pharmaceutical brand-intelligence analyst writing an executive brief for a {role_label}.
+Use ONLY the structured facts below — never invent numbers, competitors, or events. No medical claims, no treatment/dosage advice. Flag adverse-event signals for human review without drawing conclusions.
 
-Brand ID: {brand_id}
-Period: {period_start} to {period_end}
-Total mentions: {total_mentions}
-Sentiment: {sentiment}
-Top topics: {topics}
-Top countries: {countries}
-Risk mentions: {risk_count}
-Adverse event candidates pending review: {ae_pending}
+Write 3–5 sentences of flowing prose (not a list), in this order:
+1. WHAT CHANGED — lead with the biggest movement vs the prior period (use the deltas).
+2. WHY — the drivers (top topics / notable items provided).
+3. COMPETITIVE POSITION — the brand's share-of-voice rank within its category.
+4. SAFETY — any new risk/adverse-event signal (flag for review); if none, state signals are clear.
+5. ACTION — end with ONE concrete recommended action that follows from these facts.
 
-Write the executive summary:"""
+=== FACTS — {brand} ({category}) · {period_start} → {period_end} (vs prior {span} days) ===
+Mentions: {cur_m} this period vs {prior_m} prior ({m_delta})
+Pharmacy reviews: {cur_r} vs {prior_r} ({r_delta})
+Sentiment this period: {pos} positive / {neu} neutral / {neg} negative ({pos_share}% positive, {pos_delta})
+Top topics this period: {topics}
+Share of Voice in {category}: {sov_share}% — rank #{sov_rank} of {sov_n}; category leader: {sov_leader}
+Risk / adverse-event mentions this period: {risk_count}{ae_note}
+Notable recent items: {events}
+
+Executive brief:"""
+
+_ROLE_LABELS = {"brand_manager": "brand manager", "marketing": "marketing lead",
+                "pharmacist": "pharmacist", "admin": "cross-functional lead"}
+
+
+def _delta(cur: int, prior: int, span: int) -> str:
+    if prior == 0:
+        return "no prior-period activity" if cur == 0 else f"new (none in prior {span}d)"
+    pct = round(100 * (cur - prior) / prior)
+    arrow = "▲" if pct > 0 else "▼" if pct < 0 else "■"
+    return f"{arrow} {pct:+d}% vs prior {span}d"
 
 
 async def generate_weekly_summary(
@@ -34,121 +48,164 @@ async def generate_weekly_summary(
     period_start: date,
     period_end: date,
     db: AsyncSession,
+    role: str = "brand_manager",
 ) -> str:
+    """Decision-grade executive brief: WHAT CHANGED (period-over-period deltas) →
+    WHY (drivers) → COMPETITIVE POSITION (SoV rank) → SAFETY → one ACTION.
+
+    Feeds the LLM *computed facts with comparisons* (not raw totals), so the brief
+    reports real movement and a recommendation instead of paraphrasing counts.
+    Summarisation only — never a medical decision. EU-region Ollama, OpenAI fallback.
     """
-    Generate LLM weekly executive summary for a brand.
-    Uses Ollama/Mistral-7B-Instruct (self-hosted, EU-region).
-    LLM is used for summarisation ONLY — not for medical decisions.
-    """
+    from datetime import timedelta
     from sqlalchemy import text
+    from core.framework_catalog import category_family
 
-    from models.mention import MentionClassification, MentionEntity, RiskType
-    from models.mention import Mention
-    from models.adverse_event import AdverseEventCandidate, AdverseEventReviewStatus
+    span = (period_end - period_start).days or 30
+    prior_start = period_start - timedelta(days=span)
 
-    entity_result = await db.execute(
-        select(MentionEntity.mention_id).where(
-            MentionEntity.entity_type == "brand",
-            MentionEntity.entity_id == brand_id,
-        )
-    )
-    mention_ids = [r[0] for r in entity_result.fetchall()]
+    brow = (await db.execute(text("SELECT name, category FROM brands WHERE id=:b"),
+                             {"b": brand_id})).first()
+    if not brow:
+        return "Brand not found."
+    bname, bcat = brow[0], brow[1] or "its category"
 
-    if not mention_ids:
-        return "No mentions found for this brand in the selected period."
+    async def _count(d0, d1, sources_only=False):
+        q = ("SELECT count(*) FROM mention_entities me JOIN mentions m ON m.id=me.mention_id "
+             "WHERE me.entity_type='brand' AND me.entity_id=:b AND m.is_deleted=false "
+             "AND m.published_at >= :d0 AND m.published_at < :d1")
+        if sources_only:
+            q += " AND m.source_type IN ('farmaline','medimarket')"
+        return (await db.execute(text(q), {"b": brand_id, "d0": d0, "d1": d1})).scalar() or 0
 
-    sent_result = await db.execute(
-        select(MentionClassification.sentiment, func.count().label("cnt"))
-        .where(MentionClassification.mention_id.in_(mention_ids))
-        .group_by(MentionClassification.sentiment)
-    )
-    sentiment_str = ", ".join(f"{r.sentiment}: {r.cnt}" for r in sent_result.fetchall() if r.sentiment)
+    cur_m = await _count(period_start, period_end)
+    prior_m = await _count(prior_start, period_start)
+    cur_r = await _count(period_start, period_end, sources_only=True)
+    prior_r = await _count(prior_start, period_start, sources_only=True)
 
-    topic_result = await db.execute(
-        select(MentionClassification.topic, func.count().label("cnt"))
-        .where(MentionClassification.mention_id.in_(mention_ids))
-        .group_by(MentionClassification.topic)
-        .order_by(func.count().desc())
-        .limit(5)
-    )
-    topics_str = ", ".join(f"{r.topic}: {r.cnt}" for r in topic_result.fetchall() if r.topic)
+    if cur_m == 0 and prior_m == 0:
+        return (f"No mentions linked to {bname} in {period_start} → {period_end} or the prior "
+                f"{span} days — nothing to report this period.")
 
-    country_result = await db.execute(
-        select(Mention.country, func.count().label("cnt"))
-        .where(Mention.id.in_(mention_ids), Mention.country.isnot(None))
-        .group_by(Mention.country)
-        .order_by(func.count().desc())
-        .limit(5)
-    )
-    countries_str = ", ".join(f"{r.country}: {r.cnt}" for r in country_result.fetchall() if r.country)
+    # Sentiment split this period (+ prior positive-share for the delta)
+    async def _sent(d0, d1):
+        rows = (await db.execute(text(
+            "SELECT mc.sentiment, count(*) c FROM mention_classifications mc "
+            "JOIN mention_entities me ON me.mention_id=mc.mention_id "
+            "JOIN mentions m ON m.id=mc.mention_id "
+            "WHERE me.entity_type='brand' AND me.entity_id=:b AND m.is_deleted=false "
+            "AND m.published_at >= :d0 AND m.published_at < :d1 GROUP BY mc.sentiment"),
+            {"b": brand_id, "d0": d0, "d1": d1})).all()
+        d = {str(s).split(".")[-1].lower(): c for s, c in rows}
+        return d.get("positive", 0), d.get("neutral", 0), d.get("negative", 0)
 
-    risk_result = await db.execute(
-        select(func.count()).where(
-            MentionClassification.mention_id.in_(mention_ids),
-            MentionClassification.risk_type != RiskType.none,
-        )
-    )
-    risk_count = risk_result.scalar() or 0
+    pos, neu, neg = await _sent(period_start, period_end)
+    tot_cls = pos + neu + neg
+    pos_share = round(100 * pos / tot_cls) if tot_cls else 0
+    p_pos, p_neu, p_neg = await _sent(prior_start, period_start)
+    p_tot = p_pos + p_neu + p_neg
+    p_share = round(100 * p_pos / p_tot) if p_tot else 0
+    pos_delta = (f"{pos_share - p_share:+d} pts vs prior {span}d" if p_tot else "no prior baseline")
 
-    ae_result = await db.execute(
-        select(func.count()).where(
-            AdverseEventCandidate.review_status == AdverseEventReviewStatus.pending
-        )
-    )
-    ae_pending = ae_result.scalar() or 0
+    # Top topics this period
+    trows = (await db.execute(text(
+        "SELECT mc.topic, count(*) c FROM mention_classifications mc "
+        "JOIN mention_entities me ON me.mention_id=mc.mention_id "
+        "JOIN mentions m ON m.id=mc.mention_id "
+        "WHERE me.entity_type='brand' AND me.entity_id=:b AND m.is_deleted=false "
+        "AND m.published_at >= :d0 AND m.published_at < :d1 AND mc.topic IS NOT NULL "
+        "GROUP BY mc.topic ORDER BY c DESC LIMIT 4"),
+        {"b": brand_id, "d0": period_start, "d1": period_end})).all()
+    topics = ", ".join(f"{str(t).split('.')[-1]} ({c})" for t, c in trows) or "no classified topics"
+
+    # Risk / adverse-event signal this period
+    risk_count = (await db.execute(text(
+        "SELECT count(*) FROM mention_classifications mc "
+        "JOIN mention_entities me ON me.mention_id=mc.mention_id "
+        "JOIN mentions m ON m.id=mc.mention_id "
+        "WHERE me.entity_type='brand' AND me.entity_id=:b AND m.is_deleted=false "
+        "AND m.published_at >= :d0 AND m.published_at < :d1 "
+        "AND mc.risk_type <> 'none'"),
+        {"b": brand_id, "d0": period_start, "d1": period_end})).scalar() or 0
+    ae_count = (await db.execute(text(
+        "SELECT count(*) FROM mention_classifications mc "
+        "JOIN mention_entities me ON me.mention_id=mc.mention_id "
+        "JOIN mentions m ON m.id=mc.mention_id "
+        "WHERE me.entity_type='brand' AND me.entity_id=:b AND m.is_deleted=false "
+        "AND m.published_at >= :d0 AND m.published_at < :d1 "
+        "AND mc.is_adverse_event_candidate=true"),
+        {"b": brand_id, "d0": period_start, "d1": period_end})).scalar() or 0
+    ae_note = f" — {ae_count} flagged as adverse-event candidates (pending human review)" if ae_count else ""
+
+    # Notable recent items (news / clinical commentary), newest first
+    erows = (await db.execute(text(
+        "SELECT left(coalesce(m.clean_text, m.raw_text), 130) FROM mention_entities me "
+        "JOIN mentions m ON m.id=me.mention_id "
+        "WHERE me.entity_type='brand' AND me.entity_id=:b AND m.is_deleted=false "
+        "AND m.source_type IN ('rss','news','bcfi','clinical_trials') "
+        "AND m.published_at >= :d0 AND m.published_at < :d1 "
+        "ORDER BY m.published_at DESC NULLS LAST LIMIT 3"),
+        {"b": brand_id, "d0": period_start, "d1": period_end})).all()
+    events = " | ".join((e[0] or "").strip().replace("\n", " ") for e in erows) or "none in feed"
+
+    # Share of Voice within the category family, this period + rank
+    fam = category_family(bcat)
+    crows = (await db.execute(text("SELECT id, name, category FROM brands WHERE category IS NOT NULL"))).all()
+    peers = [(bid, nm) for bid, nm, cat in crows if category_family(cat) == fam]
+    counts = {}
+    for pid, pnm in peers:
+        counts[pnm] = await _count_for(db, pid, period_start, period_end)
+    total_voice = sum(counts.values()) or 1
+    sov_share = round(100 * counts.get(bname, 0) / total_voice)
+    ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+    sov_n = len(ranked)
+    sov_rank = next((i + 1 for i, (nm, _) in enumerate(ranked) if nm == bname), sov_n)
+    sov_leader = ranked[0][0] if ranked else bname
+    if sov_n <= 1:
+        sov_share, sov_rank, sov_leader = 100, 1, "sole tracked brand"
 
     prompt = WEEKLY_SUMMARY_PROMPT.format(
-        brand_id=brand_id,
-        period_start=period_start,
-        period_end=period_end,
-        total_mentions=len(mention_ids),
-        sentiment=sentiment_str or "no data",
-        topics=topics_str or "no data",
-        countries=countries_str or "no data",
-        risk_count=risk_count,
-        ae_pending=ae_pending,
+        role_label=_ROLE_LABELS.get(role, "brand manager"),
+        brand=bname, category=bcat, period_start=period_start, period_end=period_end, span=span,
+        cur_m=cur_m, prior_m=prior_m, m_delta=_delta(cur_m, prior_m, span),
+        cur_r=cur_r, prior_r=prior_r, r_delta=_delta(cur_r, prior_r, span),
+        pos=pos, neu=neu, neg=neg, pos_share=pos_share, pos_delta=pos_delta,
+        topics=topics, sov_share=sov_share, sov_rank=sov_rank, sov_n=sov_n, sov_leader=sov_leader,
+        risk_count=risk_count, ae_note=ae_note, events=events,
     )
+    return await _generate(prompt)
 
-    return await _call_ollama(prompt)
+
+async def _count_for(db: AsyncSession, brand_id: int, d0: date, d1: date) -> int:
+    from sqlalchemy import text
+    return (await db.execute(text(
+        "SELECT count(*) FROM mention_entities me JOIN mentions m ON m.id=me.mention_id "
+        "WHERE me.entity_type='brand' AND me.entity_id=:b AND m.is_deleted=false "
+        "AND m.published_at >= :d0 AND m.published_at < :d1"),
+        {"b": brand_id, "d0": d0, "d1": d1})).scalar() or 0
 
 
-async def _call_ollama(prompt: str) -> str:
-    """Generate the summary. Prefer the self-hosted Ollama model (keeps the
-    aggregated context in-region); if Ollama is down or unconfigured, fall back
-    to the configured OpenAI model so the summary still renders. Only aggregated,
-    non-personal counts are sent to either backend."""
-    # 1) Self-hosted Ollama first. Run the sync client off the event loop.
+async def _generate(prompt: str) -> str:
+    """Generate the summary via OpenAI (same backend as AI search). Only
+    aggregated, non-personal counts are sent. Capped at 20s so the dashboard
+    never hangs."""
+    if not settings.OPENAI_API_KEY:
+        return "LLM summary unavailable: OPENAI_API_KEY is not configured."
     try:
-        import ollama as ollama_client
-        response = await asyncio.to_thread(
-            ollama_client.generate,
-            model=settings.OLLAMA_MODEL,
-            prompt=prompt,
-            options={"temperature": 0.3, "num_predict": 300},
-        )
-        text = (response.get("response") or "").strip()
-        if text:
-            return text
-    except Exception as exc:
-        logger.warning("ollama_generate_failed", error=str(exc))
-
-    # 2) Fallback: OpenAI (already used by AI search). Aggregated counts only.
-    if settings.OPENAI_API_KEY:
-        try:
-            from openai import AsyncOpenAI
-            client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-            completion = await client.chat.completions.create(
+        from openai import AsyncOpenAI
+        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        completion = await asyncio.wait_for(
+            client.chat.completions.create(
                 model=settings.OPENAI_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 max_completion_tokens=300,
-            )
-            text = (completion.choices[0].message.content or "").strip()
-            if text:
-                return text
-        except Exception as exc:
-            logger.warning("openai_summary_failed", error=str(exc))
-
-    return (
-        "LLM summary unavailable: neither the self-hosted Ollama service nor the "
-        "OpenAI fallback could be reached. Check OLLAMA_MODEL / OPENAI_API_KEY."
-    )
+            ),
+            timeout=20.0,
+        )
+        return (completion.choices[0].message.content or "").strip() or "Summary unavailable."
+    except asyncio.TimeoutError:
+        logger.warning("openai_summary_timeout")
+        return "Summary timed out — please retry."
+    except Exception as exc:
+        logger.warning("openai_summary_failed", error=str(exc))
+        return "Summary unavailable — the model could not be reached."

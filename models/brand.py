@@ -1,6 +1,6 @@
 from typing import List, Optional
 
-from sqlalchemy import Boolean, ForeignKey, Integer, String
+from sqlalchemy import Boolean, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -31,6 +31,21 @@ class Brand(Base, TimestampMixin):
     is_competitor: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     brand_group_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("brand_groups.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # ── Datatopia Brand→Source→KPI framework metadata ────────────────────────
+    # Populated by scripts/seed_brand_catalog.py from core/framework_catalog.py.
+    # `manufacturer` doubles as the workbook's "Owner".
+    category: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    tier_a_signal: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True, comment="Public-web (Tier A) signals available for this brand"
+    )
+    tier_bc_signal: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True, comment="Official (Tier B) + proprietary (Tier C) signals"
+    )
+    kpi_roles: Mapped[Optional[List[str]]] = mapped_column(
+        ARRAY(String(32)), nullable=True,
+        comment="Roles whose primary KPI interest includes this brand"
     )
 
     brand_group: Mapped[Optional["BrandGroup"]] = relationship("BrandGroup", back_populates="brands")

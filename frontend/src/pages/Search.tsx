@@ -13,9 +13,19 @@ import {
   Loader2, Globe, Rss, Clock, Sparkles,
   CheckCircle2, Info, Languages, ShieldAlert, History, Command,
   Stethoscope, Shield, Eye, ThumbsUp, MessageSquare, Youtube, PlayCircle,
-  Megaphone, Briefcase,
+  Megaphone, Briefcase, Radar,
   type LucideIcon,
 } from "lucide-react";
+
+// Deep-Insights topic categories → colour chip.
+const INSIGHT_CAT: Record<string, string> = {
+  regulatory: "bg-indigo-500/15 text-indigo-300 border-indigo-400/30",
+  safety: "bg-rose-500/15 text-rose-300 border-rose-400/30",
+  supply: "bg-amber-500/15 text-amber-300 border-amber-400/30",
+  market: "bg-sky-500/15 text-sky-300 border-sky-400/30",
+  clinical: "bg-violet-500/15 text-violet-300 border-violet-400/30",
+  other: "bg-white/10 text-slate-300 border-white/15",
+};
 
 // ── constants ────────────────────────────────────────────────────────────────
 
@@ -482,7 +492,7 @@ function fmtMetric(m: MetricValue): string {
 
 const FW_LABEL: Record<string, string> = {
   bpi: "Brand Potential Index",
-  momentum: "Momentum",
+  momentum: "Demand momentum",
   lifecycle: "Lifecycle",
   launch_readiness: "Launch readiness",
 };
@@ -984,16 +994,25 @@ function AIModePanel({ role }: { role: Role }) {
     onSuccess: (resp) => setData(resp),
   });
 
+  // Deep Insights — live deep-dive on the latest news for the query.
+  const [insights, setInsights] = useState<any | null>(_aiSaved.insights ?? null);
+  const diMutation = useMutation<any, unknown, { q: string }>({
+    mutationFn: async ({ q }) =>
+      apiClient.get("/search/deep-insights", { params: { q, lang: locale, role }, timeout: 150_000 }).then((r) => r.data),
+    onSuccess: (resp) => setInsights(resp),
+  });
+
   useEffect(() => {
     try {
-      sessionStorage.setItem(AI_STORAGE_KEY, JSON.stringify({ query, data }));
+      sessionStorage.setItem(AI_STORAGE_KEY, JSON.stringify({ query, data, insights }));
     } catch {}
-  }, [query, data]);
+  }, [query, data, insights]);
 
   const runQuery = (q: string) => {
     setQuery(q);
     pushRecent(q);
     mutation.mutate({ q });
+    diMutation.mutate({ q });
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -1002,6 +1021,7 @@ function AIModePanel({ role }: { role: Role }) {
     if (q.length >= 2) {
       pushRecent(q);
       mutation.mutate({ q });
+      diMutation.mutate({ q });
     }
   };
 
@@ -1062,6 +1082,102 @@ function AIModePanel({ role }: { role: Role }) {
       </form>
 
       <RecentSearches onPick={(q) => runQuery(q)} />
+
+      {/* Deep Insights — live deep-dive on the latest news, as ranked key topics */}
+      {(diMutation.isPending || insights) && (
+        <div className="bg-white border border-slate-200 rounded-2xl shadow-soft overflow-hidden">
+          <div className="px-5 py-3.5 border-b border-slate-100 flex items-center gap-2.5 bg-gradient-to-br from-accent-500/5 to-transparent">
+            <span className="shrink-0 w-7 h-7 rounded-lg bg-gradient-to-br from-accent-500 to-accent-600 flex items-center justify-center shadow-soft">
+              <Radar size={15} className="text-white" />
+            </span>
+            <div className="flex-1 min-w-0">
+              <h3 className="text-sm font-semibold text-slate-900">Deep Insights — multi-angle deep dive</h3>
+              <p className="text-[11px] text-slate-400">
+                {insights?.web_search === false ? "model knowledge" : "live web research · multi-angle"}
+                {insights?.role_label ? ` · ${insights.role_label} lens` : ""}
+                {insights?.elapsed_ms ? ` · ${(insights.elapsed_ms / 1000).toFixed(1)}s` : ""}
+              </p>
+            </div>
+          </div>
+          <div className="p-5">
+            {diMutation.isPending ? (
+              <div className="flex items-center gap-2 text-sm text-accent-300">
+                <Loader2 size={16} className="animate-spin" /> Running a multi-angle deep dive on “{query}” — this takes longer than a normal answer…
+              </div>
+            ) : diMutation.error ? (
+              <p className="text-sm text-rose-400">Couldn’t complete the deep dive — please try again.</p>
+            ) : insights ? (
+              <div className="space-y-4">
+                {insights.recommendation && (
+                  <div className="rounded-xl border border-accent-400/30 bg-accent-500/10 px-4 py-3">
+                    <p className="text-[10px] uppercase tracking-wide text-accent-300 font-semibold mb-0.5">
+                      {insights.role_label ? `${insights.role_label} — recommendation` : "Recommendation"}
+                    </p>
+                    <p className="text-sm font-semibold text-slate-100">{insights.recommendation}</p>
+                  </div>
+                )}
+                {insights.headline && <p className="text-sm text-slate-300">{insights.headline}</p>}
+                {insights.insights?.length > 0 && (
+                  <ul className="space-y-3">
+                    {insights.insights.map((it: any, i: number) => (
+                      <li key={i} className="flex gap-3">
+                        <span className="shrink-0 mt-0.5 w-5 h-5 rounded-md bg-accent-500/20 text-accent-200 text-[11px] font-bold flex items-center justify-center">{i + 1}</span>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-sm font-semibold text-slate-900">{it.topic}</span>
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded-full border font-medium ${INSIGHT_CAT[it.category] ?? INSIGHT_CAT.other}`}>{it.category}</span>
+                            {it.recency && <span className="text-[10px] text-slate-400">{it.recency}</span>}
+                          </div>
+                          <p className="text-sm text-slate-600 leading-relaxed mt-0.5">{it.detail}</p>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                {/* Research trail — the actual evidence the deep dive gathered */}
+                {insights.findings?.length > 0 && (
+                  <div className="pt-3 border-t border-white/10">
+                    <p className="text-[10px] uppercase tracking-wide text-slate-400 mb-2">
+                      Research trail · {insights.findings.length} findings across {insights.angles?.length ?? 0} live-searched angles
+                    </p>
+                    {insights.angles?.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 mb-3">
+                        {insights.angles.map((a: string, i: number) => (
+                          <span key={i} className="text-[10px] px-2 py-0.5 rounded-full bg-accent-500/10 border border-accent-400/25 text-accent-200 font-medium">{a}</span>
+                        ))}
+                      </div>
+                    )}
+                    <ul className="space-y-2">
+                      {insights.findings.map((f: any, i: number) => (
+                        <li key={i} className="flex gap-2 text-xs leading-relaxed">
+                          <span className="shrink-0 mt-0.5 text-accent-300/70">▸</span>
+                          <span className="flex-1 min-w-0">
+                            <span className="text-slate-300">{f.fact}</span>
+                            {f.date && <span className="text-slate-500"> · {f.date}</span>}
+                            {f.source_url ? (
+                              <a href={f.source_url} target="_blank" rel="noopener noreferrer"
+                                 className="inline-flex items-center gap-0.5 text-blue-400 hover:underline ml-1.5">
+                                {(f.source_title || "source").slice(0, 40)} <ExternalLink size={9} />
+                              </a>
+                            ) : f.source_title ? (
+                              <span className="text-slate-500 ml-1.5">· {f.source_title.slice(0, 40)}</span>
+                            ) : null}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {!insights.insights?.length && !insights.findings?.length && (
+                  <p className="text-sm text-slate-400">No recent news surfaced for this query.</p>
+                )}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      )}
 
       {/* Loading — pulse + skeleton answer */}
       {isFetching && (

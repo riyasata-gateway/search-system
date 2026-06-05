@@ -7,10 +7,14 @@ import {
 } from "recharts";
 import {
   TrendingUp, MessageSquare, AlertTriangle, Search, Loader2, ExternalLink,
-  Megaphone, Briefcase, Activity, Target, Rocket, Radio,
+  Megaphone, Briefcase, Activity, Radio,
+  CheckCircle2, Eye, Ban,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
+import FrameworkKpiSection from "../components/FrameworkKpiSection";
+import InfoTip from "../components/InfoTip";
+import { define } from "../lib/glossary";
 
 const SENTIMENT_COLOURS: Record<string, string> = {
   positive: "#22c55e",
@@ -20,15 +24,25 @@ const SENTIMENT_COLOURS: Record<string, string> = {
 
 const TOPIC_COLOURS = ["#3b82f6", "#8b5cf6", "#f59e0b", "#10b981", "#f43f5e", "#06b6d4", "#84cc16"];
 
-const SOURCE_COLOURS: Record<string, string> = {
-  news: "#3b82f6",
-  rss: "#8b5cf6",
-  forum: "#f59e0b",
-  google_trends: "#10b981",
-  reddit: "#f43f5e",
-  youtube: "#ef4444",
-  licensed_api: "#06b6d4",
+// Launch verdict badge — explicit dark-canvas styling so it reads on the navy bg.
+const VERDICT_MAP: Record<string, { label: string; cls: string; icon: any }> = {
+  go: { label: "GO", cls: "bg-emerald-500/15 text-emerald-300 border-emerald-400/40", icon: CheckCircle2 },
+  monitor: { label: "MONITOR", cls: "bg-amber-500/15 text-amber-300 border-amber-400/40", icon: Eye },
+  hold: { label: "HOLD", cls: "bg-red-500/15 text-red-300 border-red-400/40", icon: Ban },
 };
+
+function VerdictBadge({ verdict }: { verdict?: string }) {
+  if (!verdict) return null;
+  const v = VERDICT_MAP[verdict] ?? { label: verdict.toUpperCase(), cls: "bg-white/10 text-slate-300 border-white/20", icon: Activity };
+  const Icon = v.icon;
+  return (
+    <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border ${v.cls}`}>
+      <Icon size={15} />
+      <span className="text-[10px] uppercase tracking-wide opacity-70">Launch verdict</span>
+      <span className="text-sm font-bold tracking-wide">{v.label}</span>
+    </div>
+  );
+}
 
 // ── data hooks (all brand-scoped via ?brand_id) ──────────────────────────────
 function useMyBrands() {
@@ -101,11 +115,14 @@ const headline = (bundle: any) => bundle?.metrics?.[0] ?? null;
 const fmt = (v: any) => (v == null ? "—" : typeof v === "number" ? Math.round(v) : v);
 
 // ── small presentational helpers ─────────────────────────────────────────────
-function KpiCard({ label, value, icon: Icon, colour, suffix }: any) {
+function KpiCard({ label, value, icon: Icon, colour, suffix, info }: any) {
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-5">
       <div className="flex items-center justify-between mb-3">
-        <span className="text-sm text-gray-500">{label}</span>
+        <span className="text-sm text-gray-500 flex items-center gap-1.5">
+          {label}
+          {info && <InfoTip text={info} label={label} />}
+        </span>
         <Icon size={18} className={colour} />
       </div>
       <p className="text-3xl font-bold text-gray-900">
@@ -116,23 +133,27 @@ function KpiCard({ label, value, icon: Icon, colour, suffix }: any) {
   );
 }
 
-function GaugeBar({ label, value, unit }: { label: string; value: number | null; unit?: string }) {
-  const pct = value == null ? 0 : Math.max(0, Math.min(100, value));
-  const colour = pct >= 66 ? "#22c55e" : pct >= 40 ? "#f59e0b" : "#ef4444";
+// A small labelled statistic (replaces the old horizontal gauge bars).
+// Explicit translucent-white fill so it stays visible on the dark canvas.
+// Look up a glossary definition for a metric label, normalising variants like
+// "Lifecycle: unknown" → "Lifecycle" and "Adoption (proxy)" → "Adoption".
+const metricDef = (label: string) =>
+  define((label || "").split(":")[0].replace(/\s*\(proxy\)/i, "").trim());
+
+function StatTile({ label, value, unit, info }: { label: string; value: number | null; unit?: string; info?: string }) {
   return (
-    <div>
-      <div className="flex justify-between text-sm mb-1">
-        <span className="text-gray-600">{label}</span>
-        <span className="font-semibold text-gray-900 tabular-nums">{fmt(value)}{unit ? ` ${unit}` : ""}</span>
-      </div>
-      <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-        <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: colour }} />
-      </div>
+    <div className="rounded-lg border border-white/10 bg-white/[0.05] px-3 py-2">
+      <p className="text-[11px] text-slate-400 leading-tight flex items-center gap-1">
+        {label}{info ? <InfoTip text={info} label={label} /> : null}
+      </p>
+      <p className="text-lg font-bold text-white tabular-nums leading-tight mt-0.5">
+        {fmt(value)}<span className="text-[11px] font-medium text-slate-400 ml-0.5">{unit ?? ""}</span>
+      </p>
     </div>
   );
 }
 
-export default function LabDashboard() {
+export default function BrandPulse() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const role = user?.role ?? "brand_manager";
@@ -141,6 +162,8 @@ export default function LabDashboard() {
   const [adminView, setAdminView] = useState<"marketing" | "brand">("brand");
   const view = role === "marketing" ? "marketing" : role === "brand_manager" ? "brand" : adminView;
   const isMarketing = view === "marketing";
+  // Admins view-as a role; everyone else is locked to their own role server-side.
+  const frameworkRole = role === "admin" ? (isMarketing ? "marketing" : "brand_manager") : undefined;
 
   const { data: myBrands } = useMyBrands();
   const [brandId, setBrandId] = useState<number | null>(null);
@@ -180,15 +203,27 @@ export default function LabDashboard() {
   const sentBreak = dashboard?.sentiment_breakdown ?? {};
   const sentTotal = Object.values(sentBreak).reduce((a: number, b: any) => a + Number(b), 0) || 1;
   const positivePct = Math.round(((sentBreak.positive ?? 0) / sentTotal) * 100);
-  const sourceBreakdown: Record<string, number> = dashboard?.source_breakdown ?? {};
-  const sourceGroups = Object.entries(sourceBreakdown)
-    .map(([source_type, total]) => ({ source_type, total: Number(total) }))
-    .sort((a, b) => b.total - a.total);
-  const totalAcrossSources = sourceGroups.reduce((sum, g) => sum + g.total, 0) || 1;
 
   const bpiHead = headline(bpi);
   const launchHead = headline(launch);
   const momentumHead = headline(momentum);
+  // BPI sub-scores (Awareness × Adoption × Sentiment × Fit). Each carries a
+  // status so a neutral-fallback 50 or sole-brand 100 isn't shown as a real score.
+  const bpiStatus = bpi?.context?.component_status ?? {};
+  const statusKey = (label: string) => {
+    const l = (label || "").toLowerCase();
+    if (l.startsWith("aware")) return "awareness";
+    if (l.startsWith("adopt")) return "adoption";
+    if (l.startsWith("sentiment")) return "sentiment";
+    if (l.startsWith("market")) return "market_fit";
+    return "";
+  };
+  const bpiComponents = (bpi?.metrics ?? []).slice(1).map((m: any) => ({
+    axis: m.label,
+    value: m.value,
+    status: bpiStatus[statusKey(m.label)] ?? "ok",
+  }));
+  const launchVerdict: string | undefined = launch?.context?.verdict;
   // No mentions in window → the score is the neutral fallback, not a real reading.
   const bpiInsufficient = (bpiHead?.sample_size ?? 0) === 0;
   const launchInsufficient = (launchHead?.sample_size ?? 0) === 0;
@@ -250,89 +285,185 @@ export default function LabDashboard() {
         </div>
       )}
 
-      {/* Role-specific KPI row */}
-      <div className="grid grid-cols-3 gap-4">
-        {isMarketing ? (
-          <>
-            <KpiCard label="Total Reach (mentions)" value={totalMentions} icon={Radio} colour="text-amber-500" />
-            <KpiCard label="Positive Sentiment" value={positivePct} suffix="%" icon={MessageSquare} colour="text-green-600" />
-            <KpiCard label="Buzz Momentum" value={fmt(momentumHead?.value)} suffix="/100" icon={Activity} colour="text-blue-600" />
-          </>
-        ) : (
-          <>
-            <KpiCard label="Brand Potential Index" value={bpiInsufficient ? "n/a" : fmt(bpiHead?.value)} suffix={bpiInsufficient ? "" : "/100"} icon={Target} colour="text-purple-600" />
-            <KpiCard label="Launch Readiness" value={launchInsufficient ? "n/a" : fmt(launchHead?.value)} suffix={launchInsufficient ? "" : "/100"} icon={Rocket} colour="text-indigo-600" />
-            <KpiCard label="Risk Mentions" value={riskMentions} icon={AlertTriangle} colour="text-orange-500" />
-          </>
-        )}
-      </div>
+      {/* Marketing headline row. (Non-marketing headline numbers — BPI, Launch
+          Readiness — live INSIDE their panels below so they aren't shown twice.) */}
+      {isMarketing && (
+        <div className="grid grid-cols-3 gap-4">
+          <KpiCard label="Total Reach (mentions)" info={define("Total Reach")} value={totalMentions} icon={Radio} colour="text-amber-500" />
+          <KpiCard label="Positive Sentiment" info={define("Positive Sentiment")} value={positivePct} suffix="%" icon={MessageSquare} colour="text-green-600" />
+          <KpiCard label="Demand Momentum" info={define("Demand Momentum")} value={fmt(momentumHead?.value)} suffix="/100" icon={Activity} colour="text-blue-600" />
+        </div>
+      )}
 
       {/* Role-specific intelligence panel */}
       {isMarketing ? (
-        <div className="grid grid-cols-2 gap-6">
-          <div className="bg-white rounded-xl border border-gray-200 p-5">
-            <h2 className="text-base font-semibold text-gray-900 mb-1">Message Resonance</h2>
-            <p className="text-xs text-gray-400 mb-4">{keyHead?.label ?? "Which topics land with audiences"}</p>
-            {winning.length === 0 && losing.length === 0 ? (
-              <p className="text-sm text-gray-400">Not enough classified mentions to score message resonance yet.</p>
-            ) : (
-              <div className="space-y-3">
-                {winning.slice(0, 4).map((w: any, i: number) => (
-                  <div key={`w${i}`} className="flex items-center justify-between text-sm">
-                    <span className="text-gray-700">✅ {String(w.topic ?? w).replace("_", " ")}</span>
-                    <span className="text-green-600 font-medium">winning</span>
-                  </div>
-                ))}
-                {losing.slice(0, 4).map((l: any, i: number) => (
-                  <div key={`l${i}`} className="flex items-center justify-between text-sm">
-                    <span className="text-gray-700">⚠ {String(l.topic ?? l).replace("_", " ")}</span>
-                    <span className="text-red-500 font-medium">losing</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-          <div className="bg-white rounded-xl border border-gray-200 p-5">
-            <h2 className="text-base font-semibold text-gray-900 mb-4">Buzz & Reach</h2>
-            <div className="space-y-3">
-              <GaugeBar label="Buzz momentum" value={momentumHead?.value ?? null} unit="/100" />
-              <GaugeBar label="Positive sentiment" value={positivePct} unit="%" />
-              <div className="pt-2 text-xs text-gray-400">
-                Reach across {sourceGroups.length} channels · {totalMentions} mentions analysed
-              </div>
+        <div className="bg-white rounded-xl border border-gray-200 p-5">
+          <h2 className="text-base font-semibold text-gray-900 mb-1 flex items-center gap-1.5">
+            Message Resonance <InfoTip text={define("Message Resonance")} label="Message Resonance" />
+          </h2>
+          <p className="text-xs text-gray-400 mb-4">{keyHead?.label ?? "Which themes land with audiences — winning vs losing"}</p>
+          {winning.length === 0 && losing.length === 0 ? (
+            <p className="text-sm text-gray-400">Not enough classified mentions to score message resonance yet.</p>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-2">
+              {winning.slice(0, 5).map((w: any, i: number) => (
+                <div key={`w${i}`} className="flex items-center justify-between text-sm">
+                  <span className="text-gray-700">✅ {String(w.topic ?? w).replace("_", " ")}</span>
+                  <span className="text-green-600 font-medium">winning</span>
+                </div>
+              ))}
+              {losing.slice(0, 5).map((l: any, i: number) => (
+                <div key={`l${i}`} className="flex items-center justify-between text-sm">
+                  <span className="text-gray-700">⚠ {String(l.topic ?? l).replace("_", " ")}</span>
+                  <span className="text-red-500 font-medium">losing</span>
+                </div>
+              ))}
             </div>
-          </div>
+          )}
         </div>
       ) : (
         <div className="grid grid-cols-2 gap-6">
           <div className="bg-white rounded-xl border border-gray-200 p-5">
-            <h2 className="text-base font-semibold text-gray-900 mb-4">Brand Potential Index</h2>
-            <div className="space-y-3">
-              {bpiInsufficient ? (
-                <p className="text-sm text-gray-400">Insufficient data — no mentions linked to this brand in the last 365 days, so a Brand Potential Index can't be scored yet.</p>
-              ) : (
-                (bpi?.metrics ?? []).map((m: any, i: number) => (
-                  <GaugeBar key={i} label={m.label} value={m.value} unit={m.unit === "%" ? "%" : ""} />
-                ))
-              )}
-              {!bpi && <p className="text-sm text-gray-400">No BPI computed yet.</p>}
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-base font-semibold text-gray-900 flex items-center gap-1.5">
+                Brand Potential Index <InfoTip text={define("Brand Potential Index")} label="Brand Potential Index" />
+              </h2>
+              <span className="flex items-baseline gap-1">
+                <span className="text-2xl font-bold text-white tabular-nums leading-none">{bpiInsufficient ? "n/a" : fmt(bpiHead?.value)}</span>
+                {!bpiInsufficient && <span className="text-[11px] text-slate-500">/100</span>}
+              </span>
             </div>
+            <p className="text-[11px] uppercase tracking-wide text-slate-500 mb-2">Components</p>
+            {bpiInsufficient || bpiComponents.length === 0 ? (
+              <p className="text-sm text-gray-400">Insufficient data — no mentions linked to this brand in the last 365 days, so a Brand Potential Index can't be scored yet.</p>
+            ) : (
+              <div className="grid grid-cols-2 gap-3">
+                {bpiComponents.map((c: any) => {
+                  const v = c.value == null || Number.isNaN(c.value) ? null : Math.round(c.value);
+                  // Status-first: a neutral-fallback 50 or sole-brand 100 is NOT a real reading.
+                  let q: { word: string; dot: string; text: string };
+                  let display: string;       // what to show as the number
+                  let muted = false;
+                  if (c.status === "no_data") {
+                    q = { word: "No data", dot: "bg-slate-600", text: "text-slate-500" };
+                    display = "—"; muted = true;
+                  } else if (c.status === "sole_brand") {
+                    if ((v ?? 0) >= 100) {
+                      q = { word: "Only brand tracked", dot: "bg-sky-500", text: "text-sky-300" };
+                      display = String(v); muted = true;   // 100% but no competitors → not real dominance
+                    } else {
+                      q = { word: "No category peers", dot: "bg-slate-600", text: "text-slate-500" };
+                      display = "—"; muted = true;
+                    }
+                  } else if (c.status === "no_signal" || v === 0) {
+                    q = { word: "No signal", dot: "bg-slate-500", text: "text-slate-400" };
+                    display = "0"; muted = true;
+                  } else if (v == null) {
+                    q = { word: "No data", dot: "bg-slate-600", text: "text-slate-500" };
+                    display = "—"; muted = true;
+                  } else {
+                    q = v >= 70
+                      ? { word: c.status === "proxy" ? "Strong · proxy" : "Strong", dot: "bg-emerald-400", text: "text-emerald-300" }
+                      : v >= 40
+                        ? { word: c.status === "proxy" ? "Moderate · proxy" : "Moderate", dot: "bg-amber-400", text: "text-amber-300" }
+                        : { word: c.status === "proxy" ? "Weak · proxy" : "Weak", dot: "bg-rose-400", text: "text-rose-300" };
+                    display = String(v);
+                  }
+                  return (
+                    <div key={c.axis} className="rounded-lg border border-white/10 bg-white/[0.04] px-4 py-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[11px] font-medium uppercase tracking-wide text-slate-400 truncate flex items-center gap-1">
+                          {c.axis}<InfoTip text={metricDef(c.axis)} label={c.axis} />
+                        </span>
+                        <span className={`inline-flex shrink-0 items-center gap-1 text-[10px] font-semibold ${q.text}`}>
+                          <span className={`h-1.5 w-1.5 rounded-full ${q.dot}`} />
+                          {q.word}
+                        </span>
+                      </div>
+                      <div className="mt-1.5 flex items-baseline gap-1">
+                        <span className={`text-2xl font-bold tabular-nums leading-none ${muted ? "text-slate-500" : "text-white"}`}>{display}</span>
+                        {display !== "—" && <span className="text-[11px] text-slate-500">/100</span>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
           <div className="bg-white rounded-xl border border-gray-200 p-5">
-            <h2 className="text-base font-semibold text-gray-900 mb-4">Launch & Demand</h2>
-            <div className="space-y-3">
-              {launchInsufficient ? (
-                <p className="text-sm text-gray-400">Launch readiness needs recent mentions to score — none in window yet.</p>
-              ) : (
-                <GaugeBar label={launchHead?.label ?? "Launch readiness"} value={launchHead?.value ?? null} unit="/100" />
-              )}
-              <GaugeBar label="Demand momentum" value={momentumHead?.value ?? null} unit="/100" />
-              <div className="pt-1 flex items-center justify-between text-sm">
-                <span className="text-gray-600">Open brand-risk / adverse-event queue</span>
-                <button onClick={() => navigate("/adverse-events")} className="text-purple-600 hover:underline text-xs flex items-center gap-1">
-                  Review <ExternalLink size={11} />
-                </button>
+            <h2 className="text-base font-semibold text-gray-900 mb-4 flex items-center gap-1.5">
+              Launch &amp; Demand <InfoTip text={define("Demand Momentum")} label="Demand Momentum" />
+            </h2>
+            <div className="flex items-start gap-4">
+              {(() => {
+                const mv = momentumHead?.value == null || Number.isNaN(momentumHead?.value) ? null : Math.round(momentumHead.value);
+                const q =
+                  mv == null || mv === 0
+                    ? { word: "No signal", dot: "bg-slate-500", text: "text-slate-400" }
+                    : mv >= 70
+                      ? { word: "Strong", dot: "bg-emerald-400", text: "text-emerald-300" }
+                      : mv >= 40
+                        ? { word: "Moderate", dot: "bg-amber-400", text: "text-amber-300" }
+                        : { word: "Weak", dot: "bg-rose-400", text: "text-rose-300" };
+                return (
+                  <div className="w-36 shrink-0 rounded-lg border border-white/10 bg-white/[0.04] px-4 py-3">
+                    <span className="text-[11px] font-medium uppercase tracking-wide text-slate-400">Demand momentum</span>
+                    <div className="mt-1.5 flex items-baseline gap-1">
+                      <span className="text-3xl font-bold text-white tabular-nums leading-none">{mv == null ? "—" : mv}</span>
+                      <span className="text-[11px] text-slate-500">/100</span>
+                    </div>
+                    <span className={`mt-2 inline-flex items-center gap-1 text-[10px] font-semibold ${q.text}`}>
+                      <span className={`h-1.5 w-1.5 rounded-full ${q.dot}`} />
+                      {q.word}
+                    </span>
+                  </div>
+                );
+              })()}
+              <div className="flex-1 min-w-0 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-medium uppercase tracking-wide text-slate-400 flex items-baseline gap-1.5">
+                    Launch readiness
+                    {!launchInsufficient && (
+                      <span className="text-white font-bold text-base tabular-nums">{fmt(launchHead?.value)}<span className="text-[10px] text-slate-500 font-normal">/100</span></span>
+                    )}
+                  </span>
+                  {launchInsufficient ? (
+                    <span className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] font-semibold text-slate-400">
+                      Not scored yet
+                    </span>
+                  ) : (
+                    <VerdictBadge verdict={launchVerdict} />
+                  )}
+                </div>
+                {launchInsufficient ? (
+                  <p className="text-sm text-slate-400 leading-relaxed">
+                    No recent mentions in the 365-day window, so launch readiness can't be scored. Demand momentum (left) reflects the latest available signal.
+                  </p>
+                ) : (
+                  <div className="grid grid-cols-2 gap-2">
+                    {/* Launch-readiness sub-scores, EXCLUDING "BPI" and "Momentum"
+                        — those are already shown as the Brand Potential Index panel
+                        and the Demand-momentum gauge, so showing them here again
+                        (with launch-readiness's own values) was a duplicate. */}
+                    {(launch?.metrics ?? [])
+                      .slice(1)
+                      .filter((m: any) => !["BPI", "Momentum"].includes(m.label))
+                      .slice(0, 4)
+                      .map((m: any, i: number) => (
+                        <StatTile key={i} label={m.label} value={m.value} unit={m.unit === "%" ? "%" : ""} info={metricDef(m.label)} />
+                      ))}
+                  </div>
+                )}
               </div>
+            </div>
+            <div className="pt-3 mt-3 border-t border-gray-100 flex items-center justify-between text-sm">
+              <span className="text-gray-600 flex items-center gap-1.5">
+                <AlertTriangle size={13} className="text-orange-500" />
+                {riskMentions} risk mention{riskMentions === 1 ? "" : "s"} — brand-risk / adverse-event queue
+              </span>
+              <button onClick={() => navigate("/adverse-events")} className="text-purple-600 hover:underline text-xs flex items-center gap-1">
+                Review <ExternalLink size={11} />
+              </button>
             </div>
           </div>
         </div>
@@ -342,12 +473,17 @@ export default function LabDashboard() {
         <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-100 rounded-xl p-5">
           <div className="flex items-center gap-2 mb-3">
             <TrendingUp size={16} className="text-blue-600" />
-            <h2 className="text-sm font-semibold text-blue-900">Weekly Executive Summary</h2>
+            <h2 className="text-sm font-semibold text-blue-900">Executive Summary — what changed &amp; what to do</h2>
             <span className="text-xs text-blue-400 ml-auto">{summary.period_start} → {summary.period_end}</span>
           </div>
           <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">{summary.summary}</p>
         </div>
       )}
+
+      {/* Datatopia framework KPIs for this brand, scoped to the role */}
+      {/* Demand/Buzz momentum is already the headline (Launch & Demand panel /
+          Buzz Momentum card) — exclude the duplicate grid KPI so it shows once. */}
+      <FrameworkKpiSection brandId={brandId} role={frameworkRole} excludeKeys={["mk_search_momentum"]} />
 
       {/* Shared analytics: sentiment + topics */}
       <div className="grid grid-cols-2 gap-6">
@@ -383,37 +519,6 @@ export default function LabDashboard() {
               </BarChart>
             </ResponsiveContainer>
           </div>
-        )}
-      </div>
-
-      {/* Source / channel breakdown */}
-      <div className="bg-white rounded-xl border border-gray-200 p-5">
-        <h2 className="text-base font-semibold text-gray-900 mb-4">{isMarketing ? "Channel Mix" : "Source Breakdown"}</h2>
-        {sourceGroups.length > 0 ? (
-          <div className="space-y-3">
-            {sourceGroups.map((g) => {
-              const pct = (g.total / totalAcrossSources) * 100;
-              const colour = SOURCE_COLOURS[g.source_type] ?? "#6366f1";
-              return (
-                <div key={g.source_type} className="border border-gray-100 rounded-lg p-3">
-                  <div className="flex items-center justify-between mb-1.5">
-                    <span className="text-sm font-medium text-gray-800 capitalize flex items-center gap-2">
-                      <span className="w-2.5 h-2.5 rounded-full" style={{ background: colour }} />
-                      {g.source_type.replace("_", " ")}
-                    </span>
-                    <span className="text-xs text-gray-500 tabular-nums">
-                      <span className="font-semibold text-gray-700">{g.total}</span> · {pct.toFixed(0)}%
-                    </span>
-                  </div>
-                  <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                    <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: colour }} />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        ) : (
-          <p className="text-sm text-gray-400">No source data for this brand yet.</p>
         )}
       </div>
 

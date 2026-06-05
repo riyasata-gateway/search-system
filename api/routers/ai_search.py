@@ -59,7 +59,7 @@ def _extract_json(raw: str) -> dict:
     return {}
 
 
-async def _call_model(client, messages, allow_web_search: bool) -> str:
+async def _call_model(client, messages, allow_web_search: bool, max_tokens: int = 900) -> str:
     """Call the model and return its raw text content, asking it to web-search
     when allowed & supported.
 
@@ -91,7 +91,7 @@ async def _call_model(client, messages, allow_web_search: bool) -> str:
         client.chat.completions.create(
             model=settings.OPENAI_MODEL,
             messages=messages,
-            max_completion_tokens=900,
+            max_completion_tokens=max_tokens,
             response_format={"type": "json_object"},
         ),
         timeout=25.0,
@@ -343,6 +343,257 @@ async def _synthesise(
         role=role,
         role_label=role_label(role),
         metrics=si,
+    )
+
+
+# ── Deep Insights: live deep-dive on the LATEST news for the query ───────────
+class DeepInsight(BaseModel):
+    topic: str
+    detail: str
+    category: str = "other"      # regulatory | safety | supply | market | clinical | other
+    recency: Optional[str] = None
+
+
+class DeepInsightSource(BaseModel):
+    title: Optional[str] = None
+    url: Optional[str] = None
+
+
+class DeepFinding(BaseModel):
+    """A single dated, sourced fact gathered while researching one angle."""
+    angle: Optional[str] = None
+    fact: str
+    date: Optional[str] = None
+    source_title: Optional[str] = None
+    source_url: Optional[str] = None
+
+
+class DeepInsightsResponse(BaseModel):
+    query: str
+    headline: str
+    recommendation: Optional[str] = None   # the role's decision answer
+    insights: List[DeepInsight]
+    sources: List[DeepInsightSource]
+    angles: List[str] = []                  # the research angles explored
+    findings: List[DeepFinding] = []        # the raw evidence gathered, per angle
+    model: str
+    elapsed_ms: int
+    role: str
+    role_label: str
+    web_search: bool
+
+
+# Each role's PRIMARY decision the deep-dive must answer (not a generic summary).
+_DEEP_FRAME = {
+    "pharmacist": (
+        "Answer the counter question: SHOULD the pharmacist order / stock / recommend this, or be cautious — and WHY? "
+        "`recommendation` must be a clear verdict like 'Order — strong demand, no safety flags', "
+        "'Order with caution', or 'Hold / propose a substitute'. Lead the insights with availability & shortages, "
+        "safety signals, substitution and reimbursement angles from the latest news."),
+    "brand_manager": (
+        "Answer the brand-health question for the Belgian pharmacy channel: where is the brand WINNING vs LEAKING, "
+        "and which SKU / segment / market is the problem? `recommendation` must be the single most important action "
+        "(e.g. 'Defend share vs <competitor> launch', 'Fix the <region> distribution gap'). Lead with competitive moves, "
+        "distribution/supply, pricing & reimbursement, and regulatory developments."),
+    "marketing": (
+        "Answer the demand-creation question: WHAT message, in WHICH region, around WHICH product, RIGHT NOW? "
+        "`recommendation` must be a concrete timing/message call (e.g. 'Push the SPF range now — seasonal search spike'). "
+        "Lead with demand shifts, search/seasonal moments, review-driven message themes and competitor activity."),
+    "admin": "Give a balanced cross-functional read; `recommendation` = the single biggest takeaway.",
+}
+
+
+def _deep_plan_prompt(lang: str, role: str) -> str:
+    """Phase 1 — decompose the query into distinct research angles for this role."""
+    frame = _DEEP_FRAME.get(role, _DEEP_FRAME["admin"])
+    return f"""You are planning a DEEP research dive for a {role_label(role)} on the
+Belgian (primary) / French (secondary) pharmaceutical market.
+{frame}
+
+Break the user's query into FOUR distinct, high-value research angles that together
+give a thorough, current picture for THIS role's decision. Choose the four most
+decision-relevant of: regulatory / safety / supply & availability / competitive &
+market / pricing & reimbursement / clinical & evidence / demand & seasonality.
+Each angle is something to search the live web for the very latest on.
+
+Respond with ONLY valid JSON (no markdown):
+{{"angles": [{{"label": "short angle name", "query": "a focused search query for the latest info on this angle"}}]}}
+Return EXACTLY four angles."""
+
+
+def _deep_angle_prompt(lang: str, role: str, angle: str) -> str:
+    """Phase 2 — research one angle live and return dated, sourced facts."""
+    return f"""You are researching ONE angle of a deep dive for a {role_label(role)}
+on the Belgian (primary) / French (secondary) pharmaceutical market.
+
+ANGLE: "{angle}"
+
+Use web search to find the MOST RECENT, concrete, specific facts (prioritise the
+last 4–8 weeks). Prefer authoritative BE/FR/EU sources: FAGG/AFMPS, RIZIV/INAMI,
+EMA / EudraVigilance, ANSM, BCFI/CBIP, pharmacy retailers & brand sites, and
+reputable news. Be specific (names, numbers, dates) — no generic background.
+
+Respond with ONLY valid JSON (no markdown):
+{{"findings": [{{"fact": "one specific, dated fact", "date": "approx date",
+  "source_title": "source name", "source_url": "https://…"}}]}}
+Return 3–6 findings. Never fabricate a URL — omit it if you can't name one."""
+
+
+def _deep_insights_prompt(lang: str, role: str) -> str:
+    language = _LANG_NAMES.get(lang, "English")
+    frame = _DEEP_FRAME.get(role, _DEEP_FRAME["admin"])
+    return f"""You are a pharmaceutical news analyst for the Belgian / EU market,
+briefing a {role_label(role)}. Use web search to DEEP-DIVE the LATEST news and
+developments about the user's query — prioritise the most recent items (roughly
+the last 4–8 weeks).
+
+YOUR JOB IS TO ANSWER THIS PERSON'S DECISION, not to summarise generically:
+{frame}
+{lens_prompt(role)}
+
+Be specific and current; cite what's actually happening. If you genuinely cannot
+find recent news, say so honestly in `headline`/`recommendation` and return fewer
+insights rather than padding with generic background.
+
+Respond with ONLY valid JSON (no markdown fences), in {language} for `headline`,
+`recommendation`, `topic` and `detail`:
+{{
+  "headline": "one-sentence read of the current situation",
+  "recommendation": "the decision answer for this role — ONE or TWO sentences max, no markdown",
+  "insights": [
+    {{"topic": "short plain-text topic label (no markdown, no asterisks)",
+      "detail": "1–2 sentences of the key, specific insight + why it matters to this role",
+      "category": "regulatory|safety|supply|market|clinical|other",
+      "recency": "approx date or timeframe if known"}}
+  ],
+  "sources": [{{"title": "source name", "url": "https://…"}}]
+}}
+Return 5–8 insights, most important first."""
+
+
+@router.get("/deep-insights", response_model=DeepInsightsResponse)
+async def deep_insights(
+    q: str = Query(..., min_length=2, description="Brand, drug, or topic to deep-dive"),
+    lang: str = Query("en"),
+    role: Optional[str] = Query(None),
+    current_user: User = Depends(get_current_user),
+):
+    """Deep Insights — a live deep-dive on the latest news for the query, returned
+    as ranked key-topic points (role-tailored). Independent of Live Search."""
+    if not settings.OPENAI_API_KEY:
+        raise HTTPException(status_code=503, detail="OpenAI API key not configured.")
+    from openai import AsyncOpenAI
+
+    t0 = time.time()
+    lens = resolve_role(current_user, role)
+    lang = lang if lang in _LANG_NAMES else "en"
+    client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+
+    # ── A real multi-step deep dive (not a single call like normal AI mode) ──
+    # Phase 1: decompose the query into role-specific research angles.
+    # Phase 2: research each angle LIVE on the web, in parallel.
+    # Phase 3: synthesise the gathered, dated, sourced findings into the answer.
+    try:
+        plan_raw = await _call_model(
+            client,
+            messages=[
+                {"role": "system", "content": _deep_plan_prompt(lang, lens)},
+                {"role": "user", "content": f'Query to deep-dive: "{q}"'},
+            ],
+            allow_web_search=False,
+        )
+        angles = [a for a in (_extract_json(plan_raw).get("angles") or [])
+                  if isinstance(a, dict) and a.get("label")][:4]
+        if not angles:
+            angles = [{"label": "Latest developments", "query": q}]
+
+        async def _research(angle: dict):
+            label = str(angle.get("label"))
+            try:
+                raw = await _call_model(
+                    client,
+                    messages=[
+                        {"role": "system",
+                         "content": _deep_angle_prompt(lang, lens, label)},
+                        {"role": "user", "content": str(angle.get("query") or q)},
+                    ],
+                    allow_web_search=True,
+                )
+                found = _extract_json(raw).get("findings") or []
+                out = []
+                for f in found:
+                    if isinstance(f, dict) and f.get("fact"):
+                        f["angle"] = label          # tag each fact with its angle
+                        out.append(f)
+                return out
+            except Exception as exc:  # one angle failing must not sink the dive
+                logger.warning("deep_angle_failed", angle=label, error=str(exc))
+                return []
+
+        angle_results = await asyncio.gather(*[_research(a) for a in angles])
+        all_findings = [f for fl in angle_results for f in fl][:24]
+        angle_labels = [str(a.get("label")) for a in angles]
+
+        # Phase 3 — synthesise the role-tailored answer from the gathered evidence.
+        synth_raw = await _call_model(
+            client,
+            messages=[
+                {"role": "system", "content": _deep_insights_prompt(lang, lens)},
+                {"role": "user", "content":
+                    f'Query: "{q}"\n\nA multi-angle live deep dive gathered these dated, '
+                    f'sourced findings — treat them as your evidence and cite their sources:\n'
+                    f'{json.dumps(all_findings, ensure_ascii=False)[:7000]}\n\n'
+                    f'Now synthesise the role-tailored deep analysis.'},
+            ],
+            allow_web_search=False,
+            max_tokens=2400,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Deep Insights timed out. Please try again.")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"AI model error: {str(exc)}")
+
+    parsed = _extract_json(synth_raw)
+    # Fall back to the researched findings' sources if synthesis omitted them.
+    syn_sources = [s for s in (parsed.get("sources") or []) if isinstance(s, dict)]
+    if not syn_sources:
+        seen_u, syn_sources = set(), []
+        for f in all_findings:
+            u = f.get("source_url")
+            if u and u not in seen_u:
+                seen_u.add(u)
+                syn_sources.append({"title": f.get("source_title"), "url": u})
+    parsed["sources"] = syn_sources
+    insights = []
+    for it in (parsed.get("insights") or [])[:8]:
+        if isinstance(it, dict) and it.get("topic"):
+            insights.append(DeepInsight(
+                topic=str(it.get("topic")).replace("*", "").strip()[:160],
+                detail=str(it.get("detail") or "")[:600],
+                category=str(it.get("category") or "other").lower(),
+                recency=(str(it["recency"])[:60] if it.get("recency") else None),
+            ))
+    sources = [DeepInsightSource(title=(s.get("title") or None), url=(s.get("url") or None))
+               for s in (parsed.get("sources") or []) if isinstance(s, dict)][:10]
+    headline = parsed.get("headline") or (
+        "Latest developments from the deep dive:" if (insights or all_findings)
+        else "No recent news found for this query.")
+    rec = parsed.get("recommendation")
+    findings = [DeepFinding(
+        angle=(f.get("angle") or None),
+        fact=str(f.get("fact"))[:400],
+        date=(str(f["date"])[:40] if f.get("date") else None),
+        source_title=(f.get("source_title") or None),
+        source_url=(f.get("source_url") or None),
+    ) for f in all_findings if isinstance(f, dict) and f.get("fact")]
+    return DeepInsightsResponse(
+        query=q, headline=str(headline)[:400],
+        recommendation=(str(rec)[:500] if rec else None),
+        insights=insights, sources=sources,
+        angles=angle_labels, findings=findings,
+        model=settings.OPENAI_MODEL, elapsed_ms=int((time.time() - t0) * 1000),
+        role=lens, role_label=role_label(lens),
+        web_search=bool(settings.AI_WEB_SEARCH and _WEB_SEARCH_SUPPORTED),
     )
 
 

@@ -66,6 +66,7 @@ class ClinicalTrialsConnector(BaseConnector):
                     if not brief_title:
                         continue
                     phase = ", ".join(design.get("phases", []) or []) or "N/A"
+                    study_type = design.get("studyType", "")  # INTERVENTIONAL / OBSERVATIONAL
                     overall_status = status.get("overallStatus", "")
                     lead_sponsor = (sponsor.get("leadSponsor", {}) or {}).get("name", "")
                     conditions = ", ".join(conditions_mod.get("conditions", []) or [])
@@ -106,6 +107,7 @@ class ClinicalTrialsConnector(BaseConnector):
                             metadata={
                                 "nct_id": nct_id,
                                 "phase": phase,
+                                "study_type": study_type,
                                 "status": overall_status,
                                 "sponsor": lead_sponsor,
                             },

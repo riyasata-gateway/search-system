@@ -18,7 +18,7 @@ export default function Login() {
     try {
       const role = await login(email, password);
       if (role === "pharmacist") navigate("/pharmacist");
-      else if (role === "marketing" || role === "brand_manager") navigate("/lab");
+      else if (role === "marketing" || role === "brand_manager") navigate("/brand-pulse");
       else navigate("/admin");
     } catch {
       setError("Invalid email or password.");

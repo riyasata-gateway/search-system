@@ -83,6 +83,7 @@ def _compute_framework(db, brand_id: int, brand_name: str, role: str) -> dict:
             bpi_market_fit=round(c.market_fit, 4),
             bpi_confidence=round(c.confidence, 4),
             adoption_is_proxy=bpi.adoption_is_proxy,
+            bpi_component_status=bpi.component_status or {},
             # Share of Voice = the brand's share of category mentions = BPI awareness.
             sov_percent=round(c.awareness * 100, 2),
         )
@@ -125,7 +126,7 @@ def _combined_headline(role: str, snapshot: SearchMetrics, scalars: dict) -> Lis
             fw.append(KpiCard(key="sov", label="Share of voice", value=f"{scalars['sov_percent']:.0f}%",
                               sub="of category mentions"))
         if has("momentum_score"):
-            fw.append(KpiCard(key="momentum", label="Momentum", value=f"{scalars['momentum_score']:+.0f}",
+            fw.append(KpiCard(key="momentum", label="Demand momentum", value=f"{scalars['momentum_score']:+.0f}",
                               sub="trend acceleration",
                               tone="good" if scalars["momentum_score"] > 0 else "danger" if scalars["momentum_score"] < 0 else None))
         if has("launch_readiness"):
@@ -136,12 +137,12 @@ def _combined_headline(role: str, snapshot: SearchMetrics, scalars: dict) -> Lis
             fw.append(KpiCard(key="sov", label="Share of voice", value=f"{scalars['sov_percent']:.0f}%",
                               sub="of category mentions"))
         if has("momentum_score"):
-            fw.append(KpiCard(key="momentum", label="Buzz momentum", value=f"{scalars['momentum_score']:+.0f}",
+            fw.append(KpiCard(key="momentum", label="Demand momentum", value=f"{scalars['momentum_score']:+.0f}",
                               sub="trend acceleration",
                               tone="good" if scalars["momentum_score"] > 0 else "danger" if scalars["momentum_score"] < 0 else None))
     elif role == PHARMACIST:
         if has("momentum_score"):
-            fw.append(KpiCard(key="momentum", label="Molecule momentum", value=f"{scalars['momentum_score']:+.0f}",
+            fw.append(KpiCard(key="momentum", label="Demand momentum", value=f"{scalars['momentum_score']:+.0f}",
                               sub="trend acceleration",
                               tone="good" if scalars["momentum_score"] > 0 else None))
     else:  # admin
@@ -152,7 +153,7 @@ def _combined_headline(role: str, snapshot: SearchMetrics, scalars: dict) -> Lis
             fw.append(KpiCard(key="sov", label="Share of voice", value=f"{scalars['sov_percent']:.0f}%",
                               sub="of category mentions"))
         if has("momentum_score"):
-            fw.append(KpiCard(key="momentum", label="Momentum", value=f"{scalars['momentum_score']:+.0f}",
+            fw.append(KpiCard(key="momentum", label="Demand momentum", value=f"{scalars['momentum_score']:+.0f}",
                               sub="trend acceleration"))
 
     # Fill from snapshot headline, skipping any key already shown, cap at 6.
@@ -222,6 +223,7 @@ def flatten_for_db(si: SearchIntelligence) -> dict:
         "bpi_market_fit": sc.get("bpi_market_fit"),
         "bpi_confidence": sc.get("bpi_confidence"),
         "adoption_is_proxy": sc.get("adoption_is_proxy"),
+        "bpi_component_status": sc.get("bpi_component_status") or {},
         "sov_percent": sc.get("sov_percent"),
         "momentum_score": sc.get("momentum_score"),
         "lifecycle_stage": sc.get("lifecycle_stage"),

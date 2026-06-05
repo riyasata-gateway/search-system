@@ -2,7 +2,7 @@ import { Outlet, NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { useLiveStream } from "../hooks/useLiveStream";
 import {
-  LayoutDashboard, FlaskConical, Bell, ShieldAlert,
+  LayoutDashboard, Bell, ShieldAlert,
   Settings, Users, LogOut, Activity, Search, Globe2, ChevronDown, Sparkles, Radio, BarChart3,
 } from "lucide-react";
 import clsx from "clsx";
@@ -46,7 +46,7 @@ const ALL_ROLES = ["pharmacist", "marketing", "brand_manager", "admin"];
 
 const navItems = [
   { to: "/pharmacist",     label: "Pharmacist",      icon: LayoutDashboard, roles: ["pharmacist", "admin"] },
-  { to: "/lab",            label: "Lab / Brand",     icon: FlaskConical,    roles: LAB_ROLES },
+  { to: "/brand-pulse",    label: "Brand Pulse",     icon: Activity,        roles: LAB_ROLES },
   { to: "/brand-potential", label: "Brand Potential", icon: Sparkles,        roles: LAB_ROLES },
   { to: "/search",         label: "Search",          icon: Search,          roles: ALL_ROLES },
   { to: "/analytics",      label: "Analytics",       icon: BarChart3,       roles: ALL_ROLES },

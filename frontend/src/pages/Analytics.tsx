@@ -345,7 +345,7 @@ function BrandTable({ rows }: { rows: BrandRow[] }) {
             <Th k="sov_percent" label="SoV" right />
             <Th k="avg_rating" label="Avg ★" right />
             <th className="py-2 font-medium">Sentiment</th>
-            <th className="py-2 font-medium text-right">Momentum</th>
+            <th className="py-2 font-medium text-right">Demand momentum</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-50">

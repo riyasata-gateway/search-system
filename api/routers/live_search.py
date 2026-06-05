@@ -568,9 +568,10 @@ async def live_search(
     # wider news fan-out (keywords × locales), so latency rises modestly — tune
     # here if live search gets too slow on the default source set.
     kw_list = expand_query(q.strip(), max_terms=8)
-    lang_list = [l.strip() for l in (languages or "fr,nl,de,en").split(",") if l.strip()]
+    # Product market is Belgium (bilingual FR/NL; EN kept for international sources).
+    lang_list = [l.strip() for l in (languages or "fr,nl,en").split(",") if l.strip()]
     source_list = [s.strip() for s in (sources or ",".join(DEFAULT_SOURCES)).split(",") if s.strip()]
-    country_list = ["BE", "FR"]
+    country_list = ["BE"]
 
     since_dt = None
     since_date_str = None

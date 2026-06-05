@@ -33,3 +33,8 @@ __pycache__/
 celerybeat-schedule
 summary
 data/
+# SAM bulk export (large; regenerate via scripts, keep only derived brand_inn.json)
+data/sam/*.zip
+data/sam/*.xml
+data/farmaline/*.csv
+farmaline_*.zip

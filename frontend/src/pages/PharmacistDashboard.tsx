@@ -1,8 +1,17 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "../api/client";
 import { TrendingUp, Package, AlertCircle, Download, CheckCircle, X, Search, Loader2, ShoppingCart, AlertTriangle } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
+import FrameworkKpiSection from "../components/FrameworkKpiSection";
+import { useAuth } from "../hooks/useAuth";
+
+function useFrameworkBrands() {
+  return useQuery({
+    queryKey: ["catalog-my-brands"],
+    queryFn: () => apiClient.get("/catalog/my-brands").then((r) => r.data),
+  });
+}
 
 function useDashboard() {
   return useQuery({
@@ -83,8 +92,22 @@ export default function PharmacistDashboard() {
   const { data: dashboard, isLoading } = useDashboard();
   const { data: recommendations } = useRecommendations("pending");
   const queryClient = useQueryClient();
+  const { user } = useAuth();
   const [drugInput, setDrugInput] = useState("");
   const [drugQuery, setDrugQuery] = useState("");
+
+  // Framework brand picker — the workbook's pharmacist-interest brands.
+  const { data: fwBrandsResp } = useFrameworkBrands();
+  const fwBrands: any[] = fwBrandsResp?.brands ?? [];
+  const [brandId, setBrandId] = useState<number | null>(null);
+  useEffect(() => {
+    if (brandId == null && fwBrands.length) {
+      const withData = fwBrands.find((b) => b.has_data);
+      setBrandId((withData ?? fwBrands[0]).id);
+    }
+  }, [fwBrands, brandId]);
+  // Admins on this page view-as pharmacist; pharmacists are locked server-side.
+  const frameworkRole = user?.role === "admin" ? "pharmacist" : undefined;
 
   const updateAction = useMutation({
     mutationFn: ({ id, status }: { id: number; status: string }) =>
@@ -168,6 +191,30 @@ export default function PharmacistDashboard() {
           </div>
         ))}
       </div>
+
+      {/* Tracked brands + role-scoped KPIs */}
+      {fwBrands.length > 0 && (
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-bold text-gray-900">Brand intelligence</h2>
+              <p className="text-sm text-gray-500">Pick a tracked brand to see your pharmacist KPIs and patient signals.</p>
+            </div>
+            <select
+              value={brandId ?? ""}
+              onChange={(e) => setBrandId(Number(e.target.value))}
+              className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+            >
+              {fwBrands.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}{b.category ? ` · ${b.category}` : ""}{b.has_data ? "" : " (no data yet)"}
+                </option>
+              ))}
+            </select>
+          </div>
+          <FrameworkKpiSection brandId={brandId} role={frameworkRole} />
+        </div>
+      )}
 
       {trendData.length > 0 && (
         <div className="bg-white rounded-xl border border-gray-200 p-5">

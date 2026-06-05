@@ -91,19 +91,27 @@ class OpenFDAConnector(BaseConnector):
             logger.warning("openfda_label_failed", keyword=keyword, error=str(exc))
         return out
 
-    async def _fetch_events(self, client: httpx.AsyncClient, keyword: str) -> List[RawMention]:
+    async def _fetch_events(self, client: httpx.AsyncClient, keyword: str,
+                            countries: List[str] | None = None) -> List[RawMention]:
         out: List[RawMention] = []
-        try:
-            resp = await client.get(
-                EVENT_API,
-                params={
-                    "search": (
-                        f'patient.drug.openfda.brand_name:"{keyword}" '
-                        f'OR patient.drug.openfda.generic_name:"{keyword}"'
-                    ),
-                    "limit": 5,
-                },
+        drug_q = (
+            f'patient.drug.openfda.brand_name:"{keyword}" '
+            f'OR patient.drug.openfda.generic_name:"{keyword}"'
+        )
+        # Belgium-focus: restrict to events that occurred in / were reported from
+        # the requested countries (FAERS does carry EU/BE reports). Falls back to
+        # global if a country filter yields nothing.
+        search = f"({drug_q})"
+        if countries:
+            cc = " OR ".join(
+                f'occurcountry:"{c}" OR primarysource.reportercountry:"{c}"' for c in countries
             )
+            search = f"({drug_q}) AND ({cc})"
+        try:
+            resp = await client.get(EVENT_API, params={"search": search, "limit": 5})
+            if resp.status_code != 200 and countries:
+                # No country-scoped reports — retry global so we still surface a signal.
+                resp = await client.get(EVENT_API, params={"search": f"({drug_q})", "limit": 5})
             if resp.status_code != 200:
                 return []
             for entry in resp.json().get("results", []):
@@ -131,7 +139,7 @@ class OpenFDAConnector(BaseConnector):
                     RawMention(
                         source_type=self.source_type,
                         source_url=f"https://api.fda.gov/drug/event.json?search=safetyreportid:{report_id}",
-                        country=None,
+                        country=(entry.get("occurcountry") or (countries[0] if countries else None)),
                         language="en",
                         published_at=report_date,
                         raw_text=text[:1200],
@@ -141,6 +149,7 @@ class OpenFDAConnector(BaseConnector):
                             "subtype": "adverse_event",
                             "serious": serious,
                             "report_id": report_id,
+                            "occurcountry": entry.get("occurcountry"),
                             "reactions": reaction_terms[:10],
                         },
                     )
@@ -160,7 +169,7 @@ class OpenFDAConnector(BaseConnector):
             for keyword in keywords:
                 labels, events = await asyncio.gather(
                     self._fetch_labels(client, keyword),
-                    self._fetch_events(client, keyword),
+                    self._fetch_events(client, keyword, countries),
                     return_exceptions=True,
                 )
                 if isinstance(labels, list):

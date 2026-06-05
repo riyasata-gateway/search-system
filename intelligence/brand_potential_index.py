@@ -62,6 +62,10 @@ class BPIResult:
     window_days: int
     adoption_is_proxy: bool = False
     sample_size: int = 0  # mentions about THIS brand in-window — the honest "do we have data?" signal
+    # Per-component honesty flag: "ok" | "no_data" (neutral fallback) |
+    # "sole_brand" (no category peers → share is degenerate) | "no_signal" (genuine zero).
+    # Keeps the UI from dressing a 0.5 fallback up as a real "Moderate" score.
+    component_status: Optional[dict] = None
 
     def to_bundle(self) -> MetricBundle:
         return MetricBundle(
@@ -83,6 +87,7 @@ class BPIResult:
                 "entity_name": self.entity_name,
                 "country": self.country,
                 "adoption_is_proxy": self.adoption_is_proxy,
+                "component_status": self.component_status or {},
             },
         )
 
@@ -231,21 +236,40 @@ def _proxy_adoption_signals(
 
 
 def _category_peers(db: Session, brand: Brand) -> List[int]:
-    """Brand IDs sharing at least one product category with the target."""
+    """Brand IDs in the target's competitive set.
+
+    Primary signal is the product catalogue (brands sharing a product
+    `category_id`). But only a handful of brands have product rows wired, so when
+    that yields no real peer set we fall back to the brand's own `category` label
+    (e.g. 'OTC analgesic', 'Dermocosmetics') — brands sharing that label ARE the
+    competitive set. Without this, a brand with no products is wrongly treated as
+    the sole brand in its category and Awareness/Market-fit collapse to 100/50.
+    """
     cat_ids_q = (
         select(Product.category_id)
         .where(Product.brand_id == brand.id, Product.category_id.isnot(None))
         .distinct()
     )
     cat_ids = [int(r[0]) for r in db.execute(cat_ids_q).fetchall() if r[0] is not None]
-    if not cat_ids:
-        return []
-    peers_q = (
-        select(Product.brand_id)
-        .where(Product.category_id.in_(cat_ids))
-        .distinct()
-    )
-    return [int(r[0]) for r in db.execute(peers_q).fetchall() if r[0] is not None]
+    if cat_ids:
+        peers_q = (
+            select(Product.brand_id)
+            .where(Product.category_id.in_(cat_ids))
+            .distinct()
+        )
+        peers = [int(r[0]) for r in db.execute(peers_q).fetchall() if r[0] is not None]
+        if len(peers) > 1:
+            return peers
+
+    # Fallback: peers sharing the brand's own category FAMILY (parenthetical
+    # sub-types like 'Dermocosmetics (sun)' group with their parent family).
+    if getattr(brand, "category", None):
+        from core.framework_catalog import category_family
+        fam = category_family(brand.category)
+        rows = db.execute(select(Brand.id, Brand.category)).fetchall()
+        return [int(r[0]) for r in rows
+                if r[1] is not None and category_family(r[1]) == fam]
+    return []
 
 
 def compute_bpi(
@@ -278,6 +302,7 @@ def compute_bpi(
     my_sales = peer_sales.get(brand_id, 0)
     sales_total = sum(peer_sales.values())
     adoption_is_proxy = False
+    adoption_fallback = False
     if sales_total:
         adoption = my_sales / sales_total
     else:
@@ -290,6 +315,7 @@ def compute_bpi(
             adoption_is_proxy = True
         else:
             adoption = 0.5
+            adoption_fallback = True
 
     # ── Sentiment ────────────────────────────────────────────────────────────
     sentiment, sentiment_n = _engagement_weighted_sentiment(
@@ -323,6 +349,21 @@ def compute_bpi(
         confidence=confidence,
     )
 
+    # Per-component honesty: was this a real measurement or a degenerate fallback?
+    # For a sole-brand category every SHARE-based component (awareness, adoption,
+    # market-fit) is degenerate — the brand trivially owns 100% of a one-brand set.
+    # Only sentiment is absolute, so it can still be real. Flag the rest honestly.
+    sole_brand = len(peers) <= 1
+    component_status = {
+        "awareness": "sole_brand" if (sole_brand or peer_total == 0) else "ok",
+        "adoption": ("sole_brand" if sole_brand
+                     else "no_data" if adoption_fallback
+                     else "proxy" if adoption_is_proxy
+                     else "no_signal" if adoption == 0 else "ok"),
+        "sentiment": "no_data" if sentiment_n == 0 else "ok",
+        "market_fit": "sole_brand" if (sole_brand or not peer_total) else "ok",
+    }
+
     return BPIResult(
         entity_type="brand",
         entity_id=brand_id,
@@ -333,6 +374,7 @@ def compute_bpi(
         window_days=window_days,
         adoption_is_proxy=adoption_is_proxy,
         sample_size=my_mentions,
+        component_status=component_status,
     )
 
 

@@ -31,6 +31,7 @@ from api.routers import (
     intelligence,
     stream,
     market_data,
+    catalog,
 )
 
 configure_logging()
@@ -86,6 +87,7 @@ app.include_router(search_analytics.router, prefix="/api/v1/analytics", tags=["a
 app.include_router(intelligence.router, prefix="/api/v1/intelligence", tags=["intelligence"])
 app.include_router(stream.router, prefix="/api/v1/stream", tags=["stream"])
 app.include_router(market_data.router, prefix="/api/v1/market-data", tags=["market-data"])
+app.include_router(catalog.router, prefix="/api/v1/catalog", tags=["catalog"])
 
 
 @app.get("/health", tags=["health"])

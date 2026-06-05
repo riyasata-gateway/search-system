@@ -258,13 +258,19 @@ def role_sort_key(
     """Ascending sort key for role-aware ordering (use `sorted(..., key=...)`,
     NO reverse). Tuple ordering, no numeric score:
 
-        (risk first, source tier, topic tier, newest first)
+        (role-relevant risk first, source tier, topic tier, newest first)
 
-    Patient safety stays first for every persona (is_risk), then the role's
-    source priority, then its topic priority, then freshness as the tiebreak.
+    The lens is *opinionated*: a risk does not float to #1 for everyone. Patient-
+    safety roles (pharmacist, and the neutral admin view) put any risk first — a
+    shortage or side-effect is their job. Market-facing roles (brand_manager,
+    marketing) do NOT force risk to the top; their own source/topic tiers decide,
+    so the SAME shortage that is #1 for a pharmacist ranks *secondary* for a brand
+    manager (behind market/demand signal) and low for marketing. That makes the
+    ordering genuinely different per role on the same query, not just the layout.
     """
     src_tier, top_tier = role_tier(role, source_type, topic)
-    return (0 if is_risk else 1, src_tier, top_tier, -_recency_value(published_at))
+    risk_first = is_risk and role in (PHARMACIST, ADMIN)
+    return (0 if risk_first else 1, src_tier, top_tier, -_recency_value(published_at))
 
 
 def grounding_sort_key(role: str, source_type: Optional[str], topic: Optional[str] = None) -> tuple:
