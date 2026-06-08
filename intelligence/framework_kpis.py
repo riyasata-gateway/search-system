@@ -82,7 +82,9 @@ def compute_live_values(db: Session, brand: Brand) -> Dict[str, dict]:
     fda = cmap.get("openfda", 0)
     eudra = cmap.get("eudravigilance", 0)
     news = cmap.get("rss", 0) + cmap.get("news", 0)
-    forum = cmap.get("forum", 0)
+    # Patient-forum discussion spans the generic forum scraper + Doctissimo (FR)
+    # + Reddit — all are patient-voice sources feeding the same signal.
+    forum = cmap.get("forum", 0) + cmap.get("doctissimo", 0) + cmap.get("reddit", 0)
     bcfi = cmap.get("bcfi", 0) + cmap.get("bcfi_cbip", 0)
     safety_gate = cmap.get("safety_gate", 0)
     fagg_short = cmap.get("fagg_shortage", 0)      # Belgian FAGG/AFMPS shortage list
@@ -363,7 +365,8 @@ def compute_live_values(db: Session, brand: Brand) -> Dict[str, dict]:
 
     # Non-review public attention (news + social + forum) — the fallback signal
     # for Rx products that have no consumer-review footprint.
-    attention = cmap.get("rss", 0) + cmap.get("news", 0) + cmap.get("forum", 0) + cmap.get("youtube", 0)
+    attention = (cmap.get("rss", 0) + cmap.get("news", 0) + cmap.get("forum", 0)
+                 + cmap.get("youtube", 0) + cmap.get("doctissimo", 0) + cmap.get("reddit", 0))
 
     # Review rating & volume (marketing) / public demand signal (pharmacist)
     if rated:
@@ -460,14 +463,15 @@ def compute_live_values(db: Session, brand: Brand) -> Dict[str, dict]:
         peer_rows = [r for r in rows if category_family(r["category"]) == fam]
         basis = f"{fam} review voice"
     elif brand.primary_category:
+        # Single indexed GROUP BY (vs a correlated count subquery per peer, which
+        # is hundreds of subqueries for a big category like OTC → seconds/page).
+        # The JOIN also enforces "has data", so the peer set stays meaningful.
         rows = db.execute(text("""
-            SELECT b.id, b.name,
-                   (SELECT count(*) FROM mention_entities me
-                      WHERE me.entity_type = 'brand' AND me.entity_id = b.id) AS cnt
+            SELECT b.id, b.name, count(me.id) AS cnt
             FROM brands b
+            JOIN mention_entities me ON me.entity_id = b.id AND me.entity_type = 'brand'
             WHERE b.primary_category = :pc
-              AND EXISTS (SELECT 1 FROM mention_entities me
-                          WHERE me.entity_type = 'brand' AND me.entity_id = b.id)
+            GROUP BY b.id, b.name
         """), {"pc": brand.primary_category}).mappings().all()
         peer_rows = list(rows)
         lbl = next((c["label_fr"] for c in PRIMARY_CATEGORIES if c["code"] == brand.primary_category),
@@ -703,6 +707,60 @@ def compute_live_values(db: Session, brand: Brand) -> Dict[str, dict]:
                        if ansm_short == 0
                        else "listed on the French ANSM medicine shortage/availability register (substance match)"),
         }
+
+        # ── Dispensing status (Rx vs OTC) — SAM DeliveryModus, REF-decoded ──
+        # "Free delivery" (FD/TF) = available without prescription; M*/TD = on
+        # medical prescription. Pharmacist counter cue; also gates consumer
+        # advertising (Rx medicines can't be advertised to the public in BE).
+        deliv = meta.get("delivery")
+        if deliv:
+            status = deliv["status"]
+            disp = {"otc": "OTC — no prescription",
+                    "prescription": "Prescription-only (Rx)",
+                    "mixed": "Mixed — Rx + OTC packs"}[status]
+            out["ph_delivery_status"] = {
+                "value": status, "display": disp,
+                "detail": "Belgian SAM dispensing status (DeliveryModus): "
+                          + (", ".join(deliv["otc_codes"] + deliv["rx_codes"])),
+            }
+
+        # ── Price position in the reimbursement cluster — SAM Cheapest/HeadOfTheCluster ──
+        # Belgium reimburses against a reference (cheapest) pack per cluster; how many
+        # of the brand's packs are the cheapest in their cluster is a direct pricing-
+        # competitiveness read for BM.
+        pp = meta.get("pricing_position")
+        if pp and pp.get("cluster_packs"):
+            ct, tot = pp["cheapest_packs"], pp["cluster_packs"]
+            share = round(100 * ct / tot) if tot else 0
+            if pp.get("all_cheapest"):
+                disp = "Cheapest in every cluster"
+            elif ct:
+                disp = f"Cheapest in {share}% of packs"
+            else:
+                disp = "Above reference price"
+            out["bm_price_position"] = {
+                "value": share, "display": disp,
+                "detail": f"{ct}/{tot} pack(s) flagged cheapest in their Belgian "
+                          f"reference-reimbursement cluster (SAM)",
+            }
+
+        # ── Generic competition — molecule's marketer count (SAM, all MAHs) ──
+        # How genericized the brand's molecule is: a sole-source molecule is on-patent
+        # / single-supplier; many marketers = an off-patent, price-competitive market.
+        # (Originator/first-to-market dates in SAM are unreliable for old molecules, so
+        # we report competition intensity, not a hard originator claim.)
+        mc = meta.get("molecule_competition")
+        if mc:
+            n = mc["n_marketers"]
+            if n <= 1:
+                disp = "Sole-source — no generic competition"
+            else:
+                disp = f"Genericized — {mc['generics']} other marketer(s)"
+            out["bm_generic_status"] = {
+                "value": n, "display": disp,
+                "detail": f"{n} marketing-authorisation holder(s) market {mc['molecule']} "
+                          f"in Belgium (SAM)",
+            }
 
     # ── Manufacturer / MAH + SAM-registered portfolio (B2B / supplier brands) ──
     # SAM gives the marketing-authorisation holder / producer and the company's

@@ -265,6 +265,8 @@ def brand_kpis(
         "bm_atc_class", "bm_reimbursement", "bm_price",
         "ph_eu_safety", "ph_safety_signals", "ph_clinical_notes",
         "ph_adverse_reactions", "ph_safety_watch",
+        # SAM medicine-spine KPIs — dispensing / reference-price / generic field.
+        "ph_delivery_status", "bm_price_position", "bm_generic_status",
     }
 
     from core.framework_catalog import kpi_in_category

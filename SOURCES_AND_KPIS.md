@@ -202,6 +202,32 @@ Previously the B2B categories (PEC, and supplier-classified PAC/NUT) had **no** 
 - **Doctissimo**: **fixed** — now indexes ~800 recent threads and returns real FR patient posts.
 - **Safety Gate**: works, but premium pharmacy brands aren't in RAPEX → near-zero hits (clean-record signal).
 
+## Part 8 — Final data audit (verdict)
+
+End-to-end audit against the live DB + code. **Pipeline is correct and robust; data renders for all 5 categories.**
+- **Linking integrity**: 0 orphan links, 0 duplicate (mention,brand) links, 0 review-mentions missing a classification. 1,823/2,046 brands linked.
+- **KPI wiring**: 52 KPI_LIBRARY keys, 44 produced; **0 live/partial KPIs left unproduced**; all MEDICINE_ONLY + category-scope keys valid. (`bm_launch_readiness` is computed but shown via `/intelligence/launch-readiness`, not the framework grid — intentional.)
+- **source_type ↔ KPI reads**: consistent; the only unmatched `cmap` reads (`ansm`, `news`) are harmless OR-adds. `bcfi`+`bcfi_cbip` correctly summed.
+- **Robustness**: 0 crashes across a per-category sweep; per-brand KPI latency cut from ~5.2s→~1.6s by replacing the SoV correlated subquery with an indexed GROUP BY.
+- **Fixes applied during audit**: (1) Doctissimo + Reddit now feed `ph_patient_questions`/demand-attention (were emitted but unread); (2) SoV peer query optimised.
+- **Known empties (documented, not bugs)**: `safety_gate` (premium brands not in RAPEX → clean-record), `google_trends` (IP 429 → needs proxy), `doctissimo` (connector fixed; batch not yet run), `data_gov_be`/`fagg_shortage` news-page (superseded by SAM supply data). Medicine-spine KPIs populate for the ~49 trade-name medicine brands; the rest are suppliers covered by SAM portfolio (correct).
+
+## Part 9 — SAM-field KPIs (build pass 3)
+
+Three more KPIs mined from SAM fields we already download (no new source) — the
+non-supply items from Part 7's "still-unused SAM fields" list. All medicine-spine
+(scoped to RX/OTC/PAC + gated by `is_medicine`), so non-medicine brands never see them.
+
+| New KPI | Role | SAM field(s) | What it shows |
+|---|---|---|---|
+| **Dispensing status (Rx/OTC)** `ph_delivery_status` | pharmacist | `DeliveryModus` (REF-decoded) | Free-delivery (FD/TF → OTC) vs medical-prescription (M*/TD → Rx); also the rule that gates public advertising. **18/18 SAM medicines.** |
+| **Reference-price position** `bm_price_position` | brand_manager | `Cheapest` + `HeadOfTheCluster` | % of packs that are cheapest in their Belgian reference-reimbursement cluster. Populates for the **4** brands whose packs sit in a cluster (OTC packs outside the cluster system → "Insufficient data", honest). |
+| **Generic competition** `bm_generic_status` | brand_manager | molecule → all MAHs | How many marketing-authorisation holders market the molecule (sole-source = on-patent/single-supplier; many = off-patent, price-competitive). **18/18.** e.g. paracetamol = 37 marketers, loperamide = 12. |
+
+**Originator note:** SAM's commercialisation dates bottom out at the data horizon (paracetamol reads "2007"), so a hard originator/first-to-market claim is unreliable for old molecules. The KPI reports **competition intensity** (marketer count), not an originator flag — that's the defensible read.
+
+**Data-integrity fix found during this pass:** the MAH `Denomination` sits at `Company > Data > Denomination`, but extraction used a direct-child `find`, so `company` was silently `None` for every product-matched **medicine** (`bm_manufacturer` was empty for them; only supplier/parapharmacy producers populated). Fixed with a recursive find, and the MAH is now chosen by **majority vote** across the brand's packs (the true holder owns the most packs; parallel importers each hold a few) — e.g. Dafalgan now resolves to UPSA, not the first-seen parallel importer. Medicine MAH coverage 235 → 250.
+
 ## Sources
 
 - [FPS Health — food supplement notification](https://www.health.belgium.be/en/notification-file-food-supplement)

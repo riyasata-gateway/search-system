@@ -24,7 +24,7 @@ import os
 import sys
 import unicodedata
 import zipfile
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date
 from xml.etree import ElementTree as ET
 
@@ -39,9 +39,26 @@ from models.brand import Brand
 OUT = "data/sam/brand_inn.json"
 _MAX_NGRAM = 4
 
+# Salt / hydrate suffixes stripped so "Diclofenac Sodium" / "Ibuprofen Lysine"
+# collapse to the base molecule — generics & originator share the base INN, not
+# the salt, so molecule-competition must group on the base. (Mirrors inn_resolver.)
+_SALT_SUFFIXES = [
+    "phosphate hemihydrate", "hydrochloride", "diethylamine", "mononitrate",
+    "hemihydrate", "phosphate", "carbonate", "sulfate", "sulphate", "citrate",
+    "acetate", "maleate", "lysine", "sodium", "besilate", "mesilate", "tartrate",
+]
+
 
 def _local(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
+
+
+def _base_molecule(s: str) -> str:
+    s = s.lower().strip()
+    for suf in _SALT_SUFFIXES:
+        if s.endswith(" " + suf):
+            s = s[: -len(suf) - 1].strip()
+    return s
 
 
 def _deaccent(s: str) -> str:
@@ -96,14 +113,42 @@ def main():
 
     brand_data = defaultdict(lambda: {"subs": set(), "cnk": set(), "atc": {},
                                       "prices": [], "reimb": [], "bt": False, "mtype": None,
-                                      "statuses": set(), "comm": set(), "company": None,
-                                      "supply": [], "limited": False, "eoc": set()})
+                                      "statuses": set(), "comm": set(), "companies": Counter(),
+                                      "supply": [], "limited": False, "eoc": set(),
+                                      # Dispensing + pricing position (per-pack, summed):
+                                      "deliv_codes": set(), "cheapest_true": 0,
+                                      "cheapest_false": 0, "clustered": False})
     # Supplier/MAH portfolio: brands matched by Company/Producer name (not product
     # name) — the manufacturer's registered range. Key for B2B supplier brands,
     # which are companies, not trade names, so they never match a product OfficialName.
     portfolio = defaultdict(lambda: {"med_products": 0, "para_products": 0, "atc": set(),
                                      "supply": 0})
     pack_index = {}  # cnk -> {fr, nl, brand, kind, substance, atc}
+    # Molecule competition index: base substance -> {company: earliest commercialisation
+    # date}. Built across ALL AMPs (not just matched brands) so a matched brand can be
+    # placed against every marketer of its molecule → competition intensity (how many
+    # MAHs / generics) and a (cautious) first-to-market read.
+    mol_index = defaultdict(dict)
+
+    # DeliveryModus code → is-OTC ("free delivery") vs prescription, decoded from the
+    # SAM REF reference table (the AMP itself carries only the bare code). A code is
+    # OTC iff its official description is "free delivery / délivrance libre / vrije
+    # aflevering"; everything else ("prescription médicale…", M*/TD) is Rx.
+    delivery_is_otc = {}
+    ref_entry = next((n for n in z.namelist() if n.startswith("REF-")), None)
+    if ref_entry:
+        with z.open(ref_entry) as rf:
+            for _, rel in ET.iterparse(rf, events=("end",)):
+                if _local(rel.tag) != "DeliveryModus" or not rel.get("code"):
+                    continue
+                txt = " ".join((c.text or "") for c in rel.iter()
+                               if _local(c.tag) in ("Fr", "Nl", "En")).lower()
+                if txt:
+                    delivery_is_otc[rel.get("code")] = ("libre" in txt or "vrije aflevering" in txt
+                                                        or "free delivery" in txt or "freie abgabe" in txt)
+                rel.clear()
+    print(f"Decoded {len(delivery_is_otc)} DeliveryModus codes from REF "
+          f"({sum(delivery_is_otc.values())} OTC / free-delivery).")
     amp_count = 0
     with z.open(amp_entry) as f:
         for _, elem in ET.iterparse(f, events=("end",)):
@@ -116,6 +161,9 @@ def main():
             prices, reimb = [], []
             bt, mtype = False, None
             statuses, comm = set(), set()
+            deliv_codes = set()
+            cheapest_true = cheapest_false = 0
+            clustered = False
             for d in elem.iter():
                 lt = _local(d.tag)
                 if lt == "OfficialName" and d.text and official is None:
@@ -142,6 +190,15 @@ def main():
                 elif lt == "Atc" and d.get("code"):
                     desc = next((c.text.strip() for c in d if _local(c.tag) == "Description" and c.text), None)
                     atcs[d.get("code")] = desc or atcs.get(d.get("code"))
+                elif lt == "DeliveryModus" and d.get("code"):
+                    deliv_codes.add(d.get("code"))
+                elif lt == "Cheapest" and d.text:   # per-pack reimbursement-cluster flag
+                    if d.text.strip().lower() == "true":
+                        cheapest_true += 1
+                    else:
+                        cheapest_false += 1
+                elif lt == "HeadOfTheCluster" and (d.text or "").strip():
+                    clustered = True   # pack sits in a reference-reimbursement cluster
                 elif lt == "RealActualIngredient":
                     rank = d.get("rank")
                     name_en = name_nl = None
@@ -191,9 +248,26 @@ def main():
             company_den = None
             comp = elem.find("{*}Data/{*}Company")
             if comp is not None:
-                den = comp.find("{*}Denomination")
+                # Denomination is nested under Company's own dated Data block
+                # (Company > Data > Denomination), not a direct child — find it
+                # recursively, else the MAH is silently dropped for medicines.
+                den = comp.find(".//{*}Denomination")
                 if den is not None and den.text:
                     company_den = den.text.strip()
+            # Molecule competition: for each rank-1 active substance (base molecule,
+            # salt-stripped), record this MAH's earliest commercialisation. Keyed per
+            # single base substance so generics/originator across all marketers of the
+            # molecule are grouped (a brand's packs fragment across salts & combos).
+            rank1_bases = {_base_molecule(s) for rk, s in subs if rk == "1"}
+            rank1_bases.discard("")
+            if rank1_bases and company_den:
+                amp_comm = min(comm) if comm else None
+                for base in rank1_bases:
+                    mi = mol_index[base]
+                    if company_den not in mi:
+                        mi[company_den] = amp_comm
+                    elif amp_comm and (mi[company_den] is None or amp_comm < mi[company_den]):
+                        mi[company_den] = amp_comm
             # Supplier brand matched by its MAH/company name → portfolio roll-up.
             if company_den:
                 pb = _match(company_den.lower(), cand_to_brand)
@@ -213,11 +287,15 @@ def main():
                     dat["statuses"].update(statuses); dat["comm"].update(comm)
                     if mtype:
                         dat["mtype"] = mtype
-                    if dat["company"] is None:
-                        dat["company"] = company_den
+                    if company_den:
+                        dat["companies"][company_den] += 1
                     dat["supply"].extend(supply_list)
                     dat["limited"] = dat["limited"] or limited
                     dat["eoc"].update(eoc_set)
+                    dat["deliv_codes"].update(deliv_codes)
+                    dat["cheapest_true"] += cheapest_true
+                    dat["cheapest_false"] += cheapest_false
+                    dat["clustered"] = dat["clustered"] or clustered
                     nl_el = elem.find("{*}Data/{*}Name/{*}Nl")
                     name_nl = nl_el.text if nl_el is not None else None
                     prim = sorted({s for rk, s in subs if rk == "1"}) or sorted({s for _, s in subs})
@@ -320,6 +398,60 @@ def main():
             "end_of_commercialisation": eoc_status,
         }
 
+    def _delivery_summary(dat):
+        """Rx-vs-OTC dispensing status from the brand's pack DeliveryModus codes.
+        Codes unknown to the REF table default to prescription (conservative)."""
+        codes = dat.get("deliv_codes") or set()
+        if not codes:
+            return None
+        otc = sorted(c for c in codes if delivery_is_otc.get(c))
+        rx = sorted(c for c in codes if not delivery_is_otc.get(c))
+        status = "mixed" if (otc and rx) else "otc" if otc else "prescription"
+        return {"status": status, "otc_codes": otc, "rx_codes": rx}
+
+    def _pricing_position(dat):
+        """Reimbursement-cluster pricing position: how many of the brand's packs are
+        the cheapest in their reference cluster (Belgian reference-reimbursement)."""
+        ct, cf = dat.get("cheapest_true", 0), dat.get("cheapest_false", 0)
+        if not (ct or cf or dat.get("clustered")):
+            return None
+        total = ct + cf
+        return {
+            "cheapest_packs": ct,
+            "cluster_packs": total,
+            "clustered": bool(dat.get("clustered")),
+            "all_cheapest": bool(total and ct == total),
+        }
+
+    def _molecule_competition(primary, company):
+        """Place the brand against every MAH marketing its molecule → originator
+        (earliest to market) vs generic/follow-on, and competitor count.
+
+        A brand's packs fragment across salts and combinations, so we score each
+        of its rank-1 base molecules against the market and report the most
+        contested one (the headline generic-competition signal)."""
+        if not company:
+            return None
+        best = None
+        for base in {_base_molecule(s) for s in (primary or [])} - {""}:
+            comp_map = mol_index.get(base)
+            if not comp_map or company not in comp_map:
+                continue
+            if best is None or len(comp_map) > best[1]:
+                best = (base, len(comp_map), comp_map)
+        if best is None:
+            return None
+        base, n, comp_map = best
+        comms = [c for c in comp_map.values() if c]
+        own = comp_map.get(company)
+        return {
+            "molecule": base,
+            "n_marketers": n,
+            "generics": max(0, n - 1),
+            "is_originator": bool(own and comms and own == min(comms)),
+            "own_since": own,
+        }
+
     result = {}
     for b in set(brand_data) | set(nm_data) | set(portfolio):
         dat = brand_data.get(b, {})
@@ -328,10 +460,16 @@ def main():
         prices = dat.get("prices") or []
         reimb = dat.get("reimb") or []
         is_med = bool(dat.get("subs") or dat.get("atc"))
+        prim_list = (sorted({s for rk, s in dat.get("subs", set()) if rk == "1"})
+                     or sorted({s for _, s in dat.get("subs", set())}))
+        # Marketing-authorisation holder = the company holding the most of the brand's
+        # packs (the true MAH; parallel importers each hold only a few), not whichever
+        # AMP happened to parse first.
+        companies = dat.get("companies") or Counter()
+        company_val = (companies.most_common(1)[0][0] if companies else None) or nm.get("producer")
         entry = {
             "is_medicine": is_med,
-            "primary": sorted({s for rk, s in dat.get("subs", set()) if rk == "1"})
-                       or sorted({s for _, s in dat.get("subs", set())}),
+            "primary": prim_list,
             "all": sorted({s for _, s in dat.get("subs", set())}),
             "atc": [{"code": k, "desc": v} for k, v in sorted(dat.get("atc", {}).items())],
             "cnk": sorted(set(dat.get("cnk", set())) | set(nm.get("cnk", set()))),
@@ -345,7 +483,7 @@ def main():
             "producer": nm.get("producer"),
             # Marketing-authorisation holder (medicines) or producer (parapharmacy) —
             # the manufacturer/owner, for B2B / manufacturer roll-ups.
-            "company": dat.get("company") or nm.get("producer"),
+            "company": company_val,
             # Supplier/MAH portfolio: the brand's registered SAM range when it was
             # matched as a manufacturer/producer (B2B supplier brands).
             "sam_portfolio": ({
@@ -356,6 +494,12 @@ def main():
             } if pf and (pf["med_products"] or pf["para_products"]) else None),
             # Belgian supply / availability signal (SAM SupplyProblem + EoC).
             "supply": _supply_summary(dat),
+            # Rx-vs-OTC dispensing status (SAM DeliveryModus, REF-decoded).
+            "delivery": _delivery_summary(dat),
+            # Reimbursement-cluster pricing position (SAM Cheapest/HeadOfTheCluster).
+            "pricing_position": _pricing_position(dat),
+            # Originator-vs-generic, from the molecule's MAH set + first-to-market date.
+            "molecule_competition": _molecule_competition(prim_list, company_val),
             "status": ("AUTHORIZED" if "AUTHORIZED" in dat.get("statuses", set())
                        else (sorted(dat.get("statuses", set()))[0] if dat.get("statuses") else None)),
             "ever_suspended": bool({"SUSPENDED", "WITHDRAWN", "REVOKED"} & dat.get("statuses", set())),

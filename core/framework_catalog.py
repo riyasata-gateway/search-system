@@ -462,6 +462,18 @@ KPI_LIBRARY: List[Dict] = [
      "logic": "Whether the brand's active substance is on the French ANSM shortage/availability register — a cross-border supply read for the FR-speaking market, complementing the Belgian FAGG/PharmaStatus shortage signal.",
      "metric_type": "ABS", "data_sources": ["ANSM (FR)"], "dia_layer": "Detect",
      "data_status": "live", "endpoint": "/catalog/brand-kpis"},
+    {"key": "ph_delivery_status", "role": "pharmacist", "kpi": "Dispensing status (Rx/OTC)",
+     "logic": "Whether the brand's packs are dispensed on medical prescription or as free delivery (OTC), from the Belgian SAM drug master's DeliveryModus — the counter cue for how it's supplied, and the rule that gates public advertising (Rx can't be advertised to the public in BE).",
+     "metric_type": "ABS", "data_sources": ["SAM (FAGG)"], "dia_layer": "Detect",
+     "data_status": "live", "endpoint": "/catalog/brand-kpis"},
+    {"key": "bm_price_position", "role": "brand_manager", "kpi": "Reference-price position",
+     "logic": "Share of the brand's packs that are the cheapest in their Belgian reference-reimbursement cluster (SAM Cheapest/HeadOfTheCluster). Above the reference price means a patient top-up — a direct pricing-competitiveness signal vs the generic field.",
+     "metric_type": "%", "data_sources": ["SAM (FAGG)"], "dia_layer": "Interpret",
+     "data_status": "live", "endpoint": "/catalog/brand-kpis"},
+    {"key": "bm_generic_status", "role": "brand_manager", "kpi": "Generic competition",
+     "logic": "How many marketing-authorisation holders market the brand's molecule in Belgium (SAM): a sole-source molecule is on-patent / single-supplier; many marketers signal an off-patent, price-competitive market — the peer-set and pricing-pressure context.",
+     "metric_type": "ABS", "data_sources": ["SAM (FAGG)"], "dia_layer": "Interpret",
+     "data_status": "live", "endpoint": "/catalog/brand-kpis"},
 ]
 
 
@@ -541,6 +553,9 @@ KPI_CATEGORY_SCOPE: Dict[str, set] = {
     "otc_safety_gate": {"OTC"},                    # cosmetics recalls
     "ph_be_shortage": _MEDICINE_BEARING,           # Belgian FAGG shortage (Belgium-first)
     "ph_fr_availability": _MEDICINE_BEARING,       # FR ANSM shortage cross-border read
+    "ph_delivery_status": _MEDICINE_BEARING,       # SAM DeliveryModus (Rx vs OTC)
+    "bm_price_position": _MEDICINE_BEARING,        # SAM reference-reimbursement cluster
+    "bm_generic_status": _MEDICINE_BEARING,        # SAM molecule marketer count
 }
 
 
