@@ -48,12 +48,15 @@ class MomentumResult:
     prev_velocity_pct: float
     acceleration: float
     momentum_score: float
+    has_signal: bool = True   # False when there's no activity in any of the 3 windows
 
     def to_bundle(self) -> MetricBundle:
         return MetricBundle(
             name="momentum",
             metrics=[
-                as_score(self.momentum_score, "Momentum",
+                # No activity in any window → momentum is undefined, not "50/Moderate".
+                # Emit None so the UI shows "No signal" rather than a neutral filler.
+                as_score(self.momentum_score if self.has_signal else None, "Momentum",
                          comparison_window=f"vs previous {self.period}",
                          sample_size=self.current_count),
                 as_percent(self.velocity_pct, "Velocity",
@@ -121,6 +124,9 @@ def compute_momentum(
     # Project acceleration into a 0–100 SCORE. Cap at ±200pp.
     capped = max(-200.0, min(200.0, acceleration))
     momentum_score = clamp_score(50.0 + (capped / 4.0))
+    # A brand with no mentions across all three windows has no momentum to read —
+    # the 50 baseline would otherwise be shown as a real "Moderate" demand signal.
+    has_signal = (cur + prev + prev_prev) > 0
 
     return MomentumResult(
         entity_type=entity_type,
@@ -134,6 +140,7 @@ def compute_momentum(
         prev_velocity_pct=round(prev_velocity, 2),
         acceleration=round(acceleration, 2),
         momentum_score=round(momentum_score, 2),
+        has_signal=has_signal,
     )
 
 

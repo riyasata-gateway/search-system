@@ -187,14 +187,19 @@ def compute_launch_readiness(
     lifecycle_fit = LIFECYCLE_FIT.get(lifecycle.stage, 0.0)
     momentum_score = momentum.momentum_score
 
-    score = (
-        WEIGHTS["bpi"] * bpi_score
-        + WEIGHTS["lifecycle"] * lifecycle_fit
-        + WEIGHTS["momentum"] * momentum_score
-        + WEIGHTS["safety"] * safety
-        + WEIGHTS["freshness"] * freshness
-    )
-    score = clamp_score(score)
+    # Blend the weighted components, but drop momentum when there's no activity to
+    # read (its 50 baseline isn't a real signal) and renormalise so it isn't counted
+    # as a neutral filler dragging the score toward the middle.
+    parts = {
+        "bpi": bpi_score,
+        "lifecycle": lifecycle_fit,
+        "safety": safety,
+        "freshness": freshness,
+    }
+    if momentum.has_signal:
+        parts["momentum"] = momentum_score
+    weight_total = sum(WEIGHTS[k] for k in parts)
+    score = clamp_score(sum(WEIGHTS[k] * v for k, v in parts.items()) / weight_total)
 
     confidence = (
         (bpi_result.components.confidence if bpi_result else 0.0) * 0.5

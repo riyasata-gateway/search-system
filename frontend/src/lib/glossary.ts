@@ -20,11 +20,11 @@ export const GLOSSARY: Record<string, string> = {
     "Share of mentions that read as positive — the headline mood toward the brand.",
 
   // ── BPI components ─────────────────────────────────────────────────────────
-  "Awareness": "How widely the brand is talked about vs its category — its share of category mentions.",
-  "Adoption": "Whether people are actually buying/using the brand, not just discussing it: its share of pharmacy sell-out vs category peers. With no sell-out feed connected, it falls back to a proxy (purchase-intent + review + recommendation mentions).",
-  "Sentiment": "Net positivity of the conversation about the brand (engagement-weighted).",
-  "Fit": "How well the brand resonates inside its own category — its share of the category's conversation, not inflated by off-category buzz.",
-  "Market fit": "How well the brand resonates inside its own category — its share of the category's conversation, not inflated by off-category buzz.",
+  "Awareness": "How visible the brand is vs its category — where it ranks among its peers by mention volume (percentile, so a strong mid-size brand isn't crushed by raw share).",
+  "Adoption": "Whether people are actually buying/using the brand, not just discussing it: where it ranks among peers by pharmacy sell-out. With no sell-out feed connected, it falls back to a proxy (purchase-intent + review + recommendation mentions).",
+  "Sentiment": "Net positivity of the conversation about the brand (engagement-weighted). An absolute reading, not a rank.",
+  "Fit": "How well the brand resonates inside its own category — where it ranks among peers by positive-voice (sentiment-weighted mentions), not inflated by off-category buzz.",
+  "Market fit": "How well the brand resonates inside its own category — where it ranks among peers by positive-voice (sentiment-weighted mentions), not inflated by off-category buzz.",
 
   // ── Launch-readiness components ───────────────────────────────────────────
   "Safety clearance": "A 0–100 'safe to amplify?' gate = 100 − negative-review share − risk-flagged share. Drops when there's an active adverse-event or negative signal.",

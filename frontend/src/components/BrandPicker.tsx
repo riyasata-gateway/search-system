@@ -158,101 +158,118 @@ export default function BrandPicker({ value, onSelect, selectedBrand, autoSelect
         <ChevronDown size={16} className="shrink-0 text-gray-400" />
       </button>
 
-      {/* Popover */}
+      {/* Popover — a two-pane cascade: category rail (left) → its brands (right) */}
       {open && (
-        <div className="absolute right-0 z-30 mt-2 w-[min(92vw,30rem)] rounded-xl border border-white/10 bg-[#0f1626] shadow-2xl ring-1 ring-black/40 p-3 space-y-3">
-          {/* Category chips — each with its TOTAL brand count in parentheses */}
-          <div className="flex flex-wrap gap-1.5">
-            <button
-              type="button"
-              onClick={() => selectCat(null)}
-              className={clsx(
-                "px-2.5 py-1 rounded-full text-xs font-medium border ring-1 ring-transparent transition-colors",
-                category === null ? clsx("text-white", NEUTRAL.active) : clsx(NEUTRAL.chip, "hover:bg-white/5")
-              )}
-            >
-              All <span className="opacity-60 tabular-nums">({totalAll.toLocaleString()})</span>
-            </button>
-            {categories.map((c) => {
-              const s = CAT_STYLE[c.code] ?? NEUTRAL;
-              const active = category === c.code;
-              return (
-                <button
-                  key={c.code}
-                  type="button"
-                  onClick={() => selectCat(c.code)}
-                  title={`${c.code} / ${c.label_en} — ${c.definition}`}
-                  className={clsx(
-                    "px-2.5 py-1 rounded-full text-xs font-medium border ring-1 ring-transparent transition-colors",
-                    active ? clsx("text-white", s.active) : clsx(s.chip, "hover:bg-white/5")
-                  )}
-                >
-                  <span className="font-semibold">{c.code}</span> · {c.label_fr}{" "}
-                  <span className="opacity-60 tabular-nums">({c.count.toLocaleString()})</span>
-                </button>
-              );
-            })}
-          </div>
-          {activeDef && <p className="text-[11px] text-slate-500 leading-snug">{activeDef}</p>}
-
-          {/* Search */}
-          <div className="relative">
-            <Search size={15} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
-            <input
-              autoFocus
-              value={rawQ}
-              onChange={(e) => setRawQ(e.target.value)}
-              placeholder="Search brands…"
-              className="w-full pl-8 pr-8 py-1.5 rounded-lg border border-white/10 bg-white/[0.04] text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-white/30"
-            />
-            {isFetching && <Loader2 size={14} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 animate-spin" />}
-          </div>
-
-          {/* Header row + pagination */}
-          <div className="flex items-center justify-between text-[11px] text-slate-400">
-            <span>{total.toLocaleString()} {category ? `in ${category}` : "brands"}{q ? ` matching “${q}”` : ""}</span>
-            <span className="flex items-center gap-1.5">
-              <button type="button" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}
-                className="p-0.5 rounded hover:bg-white/10 disabled:opacity-30"><ChevronLeft size={14} /></button>
-              <span className="tabular-nums">{page}/{totalPages}</span>
-              <button type="button" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}
-                className="p-0.5 rounded hover:bg-white/10 disabled:opacity-30"><ChevronRight size={14} /></button>
-            </span>
-          </div>
-
-          {/* Brand list */}
-          <ul className="divide-y divide-white/5 max-h-[44vh] overflow-y-auto rounded-lg border border-white/5">
-            {brands.map((b) => {
-              const isSel = selectedId === b.id;
-              return (
-                <li key={b.id}>
+        <div className="absolute right-0 z-30 mt-2 w-[min(94vw,38rem)] rounded-xl border border-white/10 bg-[#0f1626] shadow-2xl ring-1 ring-black/40 overflow-hidden">
+          <div className="flex h-[min(60vh,30rem)]">
+            {/* ── Level 1: category rail ─────────────────────────────────── */}
+            <div className="w-[11rem] shrink-0 border-r border-white/10 bg-white/[0.02] overflow-y-auto py-1.5">
+              {(() => {
+                const allActive = category === null;
+                return (
                   <button
                     type="button"
-                    onClick={() => choose(b)}
+                    onClick={() => selectCat(null)}
                     className={clsx(
-                      "w-full text-left px-3 py-2 flex items-center gap-2 transition-colors",
-                      isSel ? "bg-white/[0.08]" : "hover:bg-white/[0.04]"
+                      "w-full text-left px-3 py-2 flex items-center gap-2 text-xs transition-colors",
+                      allActive ? clsx("text-white", NEUTRAL.active, "ring-1") : clsx(NEUTRAL.chip, "hover:bg-white/5")
                     )}
                   >
-                    <CatBadge code={b.primary_category} />
-                    <span className="flex-1 min-w-0 truncate text-sm text-slate-100">{b.name}</span>
-                    {b.is_medicine && (
-                      <span title="Registered medicine (SAM)" className="shrink-0"><Pill size={13} className="text-sky-300" /></span>
-                    )}
-                    {b.has_data ? (
-                      <span title="Has linked data — live KPIs" className="shrink-0"><CircleDot size={13} className="text-emerald-400" /></span>
-                    ) : (
-                      <span title="No linked data yet" className="shrink-0"><CircleDashed size={13} className="text-slate-600" /></span>
-                    )}
-                    {isSel && <Check size={14} className="shrink-0 text-emerald-300" />}
+                    <span className="flex-1 font-medium">All brands</span>
+                    <span className="opacity-60 tabular-nums">{totalAll.toLocaleString()}</span>
+                    <ChevronRight size={13} className={clsx("shrink-0", allActive ? "opacity-80" : "opacity-30")} />
                   </button>
-                </li>
-              );
-            })}
-            {brands.length === 0 && !isFetching && (
-              <li className="px-3 py-8 text-center text-sm text-slate-500">No brands match.</li>
-            )}
-          </ul>
+                );
+              })()}
+              {categories.map((c) => {
+                const s = CAT_STYLE[c.code] ?? NEUTRAL;
+                const active = category === c.code;
+                return (
+                  <button
+                    key={c.code}
+                    type="button"
+                    onClick={() => selectCat(c.code)}
+                    title={`${c.code} / ${c.label_en} — ${c.definition}`}
+                    className={clsx(
+                      "w-full text-left px-3 py-2 flex items-center gap-2 text-xs transition-colors",
+                      active ? clsx("text-white", s.active, "ring-1") : clsx(s.chip, "hover:bg-white/5")
+                    )}
+                  >
+                    <span className="flex-1 min-w-0">
+                      <span className="font-semibold">{c.code}</span>
+                      <span className="block truncate opacity-80 text-[11px] leading-tight">{c.label_fr}</span>
+                    </span>
+                    <span className="opacity-60 tabular-nums">{c.count.toLocaleString()}</span>
+                    <ChevronRight size={13} className={clsx("shrink-0", active ? "opacity-80" : "opacity-30")} />
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* ── Level 2: brands of the chosen category ─────────────────── */}
+            <div className="flex-1 min-w-0 flex flex-col p-2.5 gap-2">
+              {/* Search */}
+              <div className="relative">
+                <Search size={15} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                <input
+                  autoFocus
+                  value={rawQ}
+                  onChange={(e) => setRawQ(e.target.value)}
+                  placeholder={category ? `Search ${category}…` : "Search all brands…"}
+                  className="w-full pl-8 pr-8 py-1.5 rounded-lg border border-white/10 bg-white/[0.04] text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-white/30"
+                />
+                {isFetching && <Loader2 size={14} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 animate-spin" />}
+              </div>
+
+              {activeDef && <p className="text-[11px] text-slate-500 leading-snug">{activeDef}</p>}
+
+              {/* Header row + pagination */}
+              <div className="flex items-center justify-between text-[11px] text-slate-400">
+                <span>{total.toLocaleString()} {category ? `in ${category}` : "brands"}{q ? ` matching “${q}”` : ""}</span>
+                <span className="flex items-center gap-1.5">
+                  <button type="button" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}
+                    className="p-0.5 rounded hover:bg-white/10 disabled:opacity-30"><ChevronLeft size={14} /></button>
+                  <span className="tabular-nums">{page}/{totalPages}</span>
+                  <button type="button" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}
+                    className="p-0.5 rounded hover:bg-white/10 disabled:opacity-30"><ChevronRight size={14} /></button>
+                </span>
+              </div>
+
+              {/* Brand list */}
+              <ul className="flex-1 divide-y divide-white/5 overflow-y-auto rounded-lg border border-white/5">
+                {brands.map((b) => {
+                  const isSel = selectedId === b.id;
+                  return (
+                    <li key={b.id}>
+                      <button
+                        type="button"
+                        onClick={() => choose(b)}
+                        className={clsx(
+                          "w-full text-left px-3 py-2 flex items-center gap-2 transition-colors",
+                          isSel ? "bg-white/[0.08]" : "hover:bg-white/[0.04]"
+                        )}
+                      >
+                        <CatBadge code={b.primary_category} />
+                        <span className="flex-1 min-w-0 truncate text-sm text-slate-100">{b.name}</span>
+                        {b.is_medicine && (
+                          <span title="Registered medicine (SAM)" className="shrink-0"><Pill size={13} className="text-sky-300" /></span>
+                        )}
+                        {b.has_data ? (
+                          <span title="Has linked data — live KPIs" className="shrink-0"><CircleDot size={13} className="text-emerald-400" /></span>
+                        ) : (
+                          <span title="No linked data yet" className="shrink-0"><CircleDashed size={13} className="text-slate-600" /></span>
+                        )}
+                        {isSel && <Check size={14} className="shrink-0 text-emerald-300" />}
+                      </button>
+                    </li>
+                  );
+                })}
+                {brands.length === 0 && !isFetching && (
+                  <li className="px-3 py-8 text-center text-sm text-slate-500">No brands match.</li>
+                )}
+              </ul>
+            </div>
+          </div>
         </div>
       )}
     </div>

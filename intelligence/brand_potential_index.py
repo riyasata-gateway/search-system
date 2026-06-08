@@ -1,21 +1,28 @@
 """Brand Potential Index (BPI) — the central output of the TDAH framework.
 
-  BPI = Awareness × Adoption × Sentiment × MarketFit
+  BPI = mean(Awareness, Adoption, Sentiment, MarketFit)   over measured components
 
-Each component is normalised into a 0–1 share so the final product is itself
-0–1, then surfaced as a 0–100 SCORE. The four components map to specific
-data sources we already have:
+The three *competitive* components are expressed as a brand's **percentile rank
+within its peer set**, not as a raw market share. Raw share is the wrong
+normalisation for a 0–100 index: in a category with hundreds of tracked brands
+every non-leader's share rounds to ~0, so the old geometric mean collapsed to a
+constant floor (0.001^0.25·100 ≈ 18) and a 200-review brand scored the same as an
+8-mention shell. Percentile rank spreads the field meaningfully — a brand in the
+top third of its peers reads ~70, the median ~50 — and is robust to category size.
 
-  • Awareness   — total mention volume vs the brand's competitive set
-  • Adoption    — pharmacy sales velocity vs competitive set (proxy if no
-                  full GERS/IQVIA wiring; uses pharmacy_sales as available)
-  • Sentiment   — share of positive-or-neutral mentions, with negatives
-                  weighted by engagement (loud complaints sting more)
-  • MarketFit   — share-of-voice in the brand's *category*, capturing
-                  category resonance independent of headline volume
+  • Awareness   — percentile of total mention volume vs the competitive set
+  • Adoption    — percentile of uptake (pharmacy sales if wired, else the
+                  documented proxy: purchase-intent + reviews + recommendations)
+  • Sentiment   — ABSOLUTE engagement-weighted positive share (not a rank);
+                  loud complaints sting more
+  • MarketFit   — percentile of *positive-voice* volume (mentions weighted by
+                  sentiment) vs peers — category resonance, distinct from raw reach
 
-The function gracefully degrades: if a component has insufficient data, it
-falls back to a neutral 0.5 and the confidence is reduced accordingly.
+Honesty over fabrication: a component with no real signal (no peers to rank
+against, or a genuine zero) is flagged (`no_data` / `sole_brand` / `no_signal`)
+and EXCLUDED from the mean rather than dressed up as a neutral 0.5. If nothing is
+measurable the result is flagged `insufficient` so the UI shows "Insufficient
+data" instead of a fake number.
 """
 from __future__ import annotations
 
@@ -23,7 +30,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import List, Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from core.logging import get_logger
@@ -44,12 +51,6 @@ class BPIComponents:
     market_fit: float          # 0–1
     confidence: float          # 0–1, reflects data sufficiency
 
-    def to_score(self) -> float:
-        """0–1 → 0–100. Geometric mean keeps weak components from masking strong ones."""
-        product = max(0.001, self.awareness * self.adoption * self.sentiment * self.market_fit)
-        # Geometric mean of the four — same as product^(1/4)
-        return clamp_score((product ** 0.25) * 100.0)
-
 
 @dataclass
 class BPIResult:
@@ -66,6 +67,9 @@ class BPIResult:
     # "sole_brand" (no category peers → share is degenerate) | "no_signal" (genuine zero).
     # Keeps the UI from dressing a 0.5 fallback up as a real "Moderate" score.
     component_status: Optional[dict] = None
+    # True when no component is measurable → the score is not meaningful and the
+    # UI should show "Insufficient data" rather than the number.
+    insufficient: bool = False
 
     def to_bundle(self) -> MetricBundle:
         return MetricBundle(
@@ -88,6 +92,7 @@ class BPIResult:
                 "country": self.country,
                 "adoption_is_proxy": self.adoption_is_proxy,
                 "component_status": self.component_status or {},
+                "insufficient": self.insufficient,
             },
         )
 
@@ -266,6 +271,61 @@ def _proxy_adoption_signals(
     return signals
 
 
+def _percentile_rank(value: float, peer_values: List[float]) -> Optional[float]:
+    """Brand's standing among its peers as a 0–1 rank (mid-rank for ties).
+
+    Only peers with a positive signal count — a field of mostly-empty brands
+    shouldn't make a tiny value look strong. Returns None when there aren't ≥2
+    such peers to rank against (caller flags it sole_brand / no_data), and 0.0
+    for a genuine zero against a real field (caller flags no_signal).
+    """
+    pos = [v for v in peer_values if v > 0]
+    if value <= 0:
+        return 0.0 if len(pos) >= 2 else None
+    if len(pos) < 2:
+        return None
+    below = sum(1 for v in pos if v < value)
+    equal = sum(1 for v in pos if v == value)   # includes `value` itself
+    # Mid-rank percentile: the field minimum gets a small positive floor (not a
+    # harsh 0) and the maximum doesn't claim a perfect 1.0 — so a real but small
+    # brand reads "weak", not "no signal".
+    return (below + 0.5 * equal) / len(pos)
+
+
+def _positive_voice_bulk(
+    db: Session,
+    entity_ids: List[int],
+    since: Optional[date],
+    country: Optional[str],
+) -> dict[int, float]:
+    """Sentiment-weighted mention volume per brand (positive 1 · neutral 0.5 ·
+    negative 0) — the 'positive voice' a brand commands, for the Market-fit rank.
+    One aggregate query over the peer set. `since=None` = all-time."""
+    if not entity_ids:
+        return {}
+    weight = case(
+        (MentionClassification.sentiment == Sentiment.positive, 1.0),
+        (MentionClassification.sentiment == Sentiment.neutral, 0.5),
+        else_=0.0,
+    )
+    q = (
+        select(MentionEntity.entity_id, func.coalesce(func.sum(weight), 0.0))
+        .join(Mention, Mention.id == MentionEntity.mention_id)
+        .join(MentionClassification, MentionClassification.mention_id == Mention.id)
+        .where(
+            MentionEntity.entity_type == "brand",
+            MentionEntity.entity_id.in_(entity_ids),
+            Mention.is_deleted.is_(False),
+        )
+        .group_by(MentionEntity.entity_id)
+    )
+    if since is not None:
+        q = q.where(Mention.published_at >= since)
+    if country:
+        q = q.where(Mention.country == country)
+    return {int(eid): float(w or 0.0) for eid, w in db.execute(q).fetchall()}
+
+
 def _category_peers(db: Session, brand: Brand) -> List[int]:
     """Brand IDs in the target's competitive set.
 
@@ -347,95 +407,109 @@ def compute_bpi(
     # read, so awareness / adoption / market-fit / sentiment are computed all-time.
     voice_since: Optional[date] = None
 
-    # ── Awareness ────────────────────────────────────────────────────────────
+    sole_brand = len(peers) <= 1
+
+    # ── Peer signals (one bulk query each), then PERCENTILE RANK vs the field ──
     mention_counts = _mentions_in_window(db, "brand", peers, voice_since, country)
     my_mentions = mention_counts.get(brand_id, 0)
-    peer_total = sum(mention_counts.values())
-    if peer_total:
-        awareness = my_mentions / peer_total
-    else:
-        awareness = 0.5  # no peer data → neutral
+    awareness = _percentile_rank(my_mentions, list(mention_counts.values()))
 
-    # ── Adoption (pharmacy sales velocity vs peers) ──────────────────────────
-    # One aggregate query over all peers — a per-peer loop is hundreds of round
-    # trips once the primary-category fallback widens the peer set.
+    # Adoption: real pharmacy sales if wired, else the documented proxy
+    # (purchase-intent + reviews + recommendations). One aggregate query over peers.
     peer_sales = _sales_velocity_bulk(db, peers, since, country)
-    my_sales = peer_sales.get(brand_id, 0)
     sales_total = sum(peer_sales.values())
-    adoption_is_proxy = False
-    adoption_fallback = False
     if sales_total:
-        adoption = my_sales / sales_total
+        adoption_values = peer_sales
+        adoption_is_proxy = False
     else:
-        # No pharmacy_sales wired → fall back to the documented proxy uptake
-        # signal (purchase intent + reviews + advocacy), shared vs peers, all-time.
-        proxy = _proxy_adoption_signals(db, peers, voice_since, country)
-        proxy_total = sum(proxy.values())
-        if proxy_total:
-            adoption = proxy.get(brand_id, 0) / proxy_total
-            adoption_is_proxy = True
-        else:
-            adoption = 0.5
-            adoption_fallback = True
+        adoption_values = _proxy_adoption_signals(db, peers, voice_since, country)
+        adoption_is_proxy = bool(sum(adoption_values.values()))
+    my_adoption_raw = adoption_values.get(brand_id, 0)
+    adoption = _percentile_rank(my_adoption_raw, list(adoption_values.values()))
 
-    # ── Sentiment ────────────────────────────────────────────────────────────
+    # Sentiment: ABSOLUTE engagement-weighted positive share (not a rank).
     sentiment, sentiment_n = _engagement_weighted_sentiment(
         db, "brand", brand_id, voice_since, country
     )
 
-    # ── Market Fit ───────────────────────────────────────────────────────────
-    # Share of mentions *within the category* — distinct from raw awareness
-    # because awareness can be inflated by off-category buzz.
-    if peer_total and len(peers) > 1:
-        # Penalise concentration: lone-wolf peers shouldn't auto-win
-        market_fit = (my_mentions / peer_total) * (len(peers) / (len(peers) + 1))
-        market_fit = min(1.0, market_fit * 2.0)  # scale up so realistic shares aren't crushed
-    else:
-        market_fit = 0.5
+    # Market fit: percentile of positive-voice volume vs peers — category resonance.
+    positive_voice = _positive_voice_bulk(db, peers, voice_since, country)
+    market_fit = _percentile_rank(positive_voice.get(brand_id, 0.0),
+                                  list(positive_voice.values()))
+
+    # ── Per-component honesty flags ──────────────────────────────────────────
+    # A share rank is degenerate for a sole brand, and unrankable when <2 peers
+    # carry a signal (rank → None). A genuine zero against a real field is no_signal.
+    def _share_status(rank: Optional[float], raw: float) -> str:
+        if sole_brand:
+            return "sole_brand"
+        if rank is None:
+            return "no_data"          # <2 peers carry a signal → can't rank
+        return "no_signal" if raw <= 0 else "ok"   # genuine zero, not just lowest rank
+
+    awareness_status = _share_status(awareness, my_mentions)
+    market_fit_status = _share_status(market_fit, positive_voice.get(brand_id, 0.0))
+    adoption_status = _share_status(adoption, my_adoption_raw)
+    if adoption_status == "ok" and adoption_is_proxy:
+        adoption_status = "proxy"
+    sentiment_status = "no_data" if sentiment_n == 0 else "ok"
+
+    component_status = {
+        "awareness": awareness_status,
+        "adoption": adoption_status,
+        "sentiment": sentiment_status,
+        "market_fit": market_fit_status,
+    }
+
+    # ── Score = mean of the components that are genuinely measured ────────────
+    # Excluding fallbacks (no_data/sole_brand) so the index reflects what we know,
+    # never a neutral filler. Insufficient when nothing is measurable.
+    MEASURED = {"ok", "proxy"}
+    comp_vals = {
+        "awareness": (awareness or 0.0, awareness_status),
+        "adoption": (adoption or 0.0, adoption_status),
+        "sentiment": (sentiment, sentiment_status),
+        "market_fit": (market_fit or 0.0, market_fit_status),
+    }
+    measured = [v for (v, s) in comp_vals.values() if s in MEASURED]
+    # Insufficient only when there's genuinely nothing to score: no linked mentions,
+    # or not a single measurable component. A brand with real awareness (mention
+    # volume) still gets a score — its unmeasured components (e.g. sentiment, when the
+    # mentions aren't classified yet) are shown honestly as "No data", not hidden
+    # behind a misleading "no mentions linked" panel that contradicts its activity.
+    insufficient = my_mentions == 0 or len(measured) == 0
+    bpi_score = round(100.0 * sum(measured) / len(measured), 2) if measured else 0.0
 
     # ── Confidence ───────────────────────────────────────────────────────────
-    # High when we have mentions, sales data, and >1 peer.
-    confidence_parts = []
-    confidence_parts.append(min(1.0, my_mentions / 30.0))
-    confidence_parts.append(min(1.0, sentiment_n / 20.0))
-    confidence_parts.append(min(1.0, my_sales / 50.0))
-    confidence_parts.append(min(1.0, (len(peers) - 1) / 3.0))
+    # High when we have mentions, an uptake signal, sentiment volume, and >1 peer.
+    confidence_parts = [
+        min(1.0, my_mentions / 30.0),
+        min(1.0, sentiment_n / 20.0),
+        min(1.0, my_adoption_raw / 50.0),
+        min(1.0, (len(peers) - 1) / 3.0),
+    ]
     confidence = sum(confidence_parts) / len(confidence_parts)
 
     comps = BPIComponents(
-        awareness=clamp_score(awareness * 100) / 100,
-        adoption=clamp_score(adoption * 100) / 100,
+        awareness=clamp_score((awareness or 0.0) * 100) / 100,
+        adoption=clamp_score((adoption or 0.0) * 100) / 100,
         sentiment=clamp_score(sentiment * 100) / 100,
-        market_fit=clamp_score(market_fit * 100) / 100,
+        market_fit=clamp_score((market_fit or 0.0) * 100) / 100,
         confidence=confidence,
     )
-
-    # Per-component honesty: was this a real measurement or a degenerate fallback?
-    # For a sole-brand category every SHARE-based component (awareness, adoption,
-    # market-fit) is degenerate — the brand trivially owns 100% of a one-brand set.
-    # Only sentiment is absolute, so it can still be real. Flag the rest honestly.
-    sole_brand = len(peers) <= 1
-    component_status = {
-        "awareness": "sole_brand" if (sole_brand or peer_total == 0) else "ok",
-        "adoption": ("sole_brand" if sole_brand
-                     else "no_data" if adoption_fallback
-                     else "proxy" if adoption_is_proxy
-                     else "no_signal" if adoption == 0 else "ok"),
-        "sentiment": "no_data" if sentiment_n == 0 else "ok",
-        "market_fit": "sole_brand" if (sole_brand or not peer_total) else "ok",
-    }
 
     return BPIResult(
         entity_type="brand",
         entity_id=brand_id,
         entity_name=brand.name,
         country=country,
-        bpi_score=round(comps.to_score(), 2),
+        bpi_score=bpi_score,
         components=comps,
         window_days=window_days,
         adoption_is_proxy=adoption_is_proxy,
         sample_size=my_mentions,
         component_status=component_status,
+        insufficient=insufficient,
     )
 
 

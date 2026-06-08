@@ -211,8 +211,9 @@ export default function BrandPulse() {
     status: bpiStatus[statusKey(m.label)] ?? "ok",
   }));
   const launchVerdict: string | undefined = launch?.context?.verdict;
-  // No mentions in window → the score is the neutral fallback, not a real reading.
-  const bpiInsufficient = (bpiHead?.sample_size ?? 0) === 0;
+  // No mentions in window, or nothing measurable (every component a fallback) →
+  // the score isn't a real reading, so show "Insufficient data" not a number.
+  const bpiInsufficient = (bpiHead?.sample_size ?? 0) === 0 || bpi?.context?.insufficient === true;
   const launchInsufficient = (launchHead?.sample_size ?? 0) === 0;
   const keyHead = headline(keyMsg);
   const winning = keyMsg?.context?.winning ?? [];
