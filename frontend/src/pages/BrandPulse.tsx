@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiClient } from "../api/client";
 import {
@@ -13,6 +13,8 @@ import {
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import FrameworkKpiSection from "../components/FrameworkKpiSection";
+import BrandPicker, { type PickerBrand } from "../components/BrandPicker";
+import RoleBanner from "../components/RoleBanner";
 import InfoTip from "../components/InfoTip";
 import { define } from "../lib/glossary";
 
@@ -45,13 +47,6 @@ function VerdictBadge({ verdict }: { verdict?: string }) {
 }
 
 // ── data hooks (all brand-scoped via ?brand_id) ──────────────────────────────
-function useMyBrands() {
-  return useQuery({
-    queryKey: ["lab-my-brands"],
-    queryFn: () => apiClient.get("/lab/my-brands").then((r) => r.data),
-  });
-}
-
 function brandParam(brandId: number | null) {
   return brandId ? { brand_id: brandId } : {};
 }
@@ -165,14 +160,8 @@ export default function BrandPulse() {
   // Admins view-as a role; everyone else is locked to their own role server-side.
   const frameworkRole = role === "admin" ? (isMarketing ? "marketing" : "brand_manager") : undefined;
 
-  const { data: myBrands } = useMyBrands();
   const [brandId, setBrandId] = useState<number | null>(null);
-  useEffect(() => {
-    if (brandId == null && myBrands?.length) {
-      const withData = myBrands.find((b: any) => b.has_data);
-      setBrandId((withData ?? myBrands[0]).id);
-    }
-  }, [myBrands, brandId]);
+  const [activeBrand, setActiveBrand] = useState<PickerBrand | null>(null);
 
   const [competitorInput, setCompetitorInput] = useState("");
   const [competitorQuery, setCompetitorQuery] = useState("");
@@ -189,8 +178,6 @@ export default function BrandPulse() {
   const { data: keyMsg } = useIntel("key-messages", brandId, isMarketing);
 
   const { data: liveCompetitor, isFetching: competitorFetching } = useLiveCompetitor(competitorQuery, competitorQuery.length >= 2);
-
-  const activeBrand = (myBrands ?? []).find((b: any) => b.id === brandId);
 
   const sentimentPieData = (sentiment ?? []).map((s: any) => ({ name: s.topic, value: s.count }));
   const topicBarData = (topics ?? []).slice(0, 8).map((t: any) => ({
@@ -235,6 +222,7 @@ export default function BrandPulse() {
 
   return (
     <div className="space-y-6">
+      <RoleBanner />
       {/* Header: role-framed title + brand switcher + (admin) view toggle */}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
@@ -265,17 +253,11 @@ export default function BrandPulse() {
               </button>
             </div>
           )}
-          <select
-            value={brandId ?? ""}
-            onChange={(e) => setBrandId(Number(e.target.value))}
-            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
-          >
-            {(myBrands ?? []).map((b: any) => (
-              <option key={b.id} value={b.id}>
-                {b.name}{b.has_data ? "" : " (no data yet)"}
-              </option>
-            ))}
-          </select>
+          <BrandPicker
+            value={brandId}
+            selectedBrand={activeBrand}
+            onSelect={(b) => { setBrandId(b.id); setActiveBrand(b); }}
+          />
         </div>
       </div>
 

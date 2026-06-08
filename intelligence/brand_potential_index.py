@@ -96,9 +96,10 @@ def _mentions_in_window(
     db: Session,
     entity_type: str,
     entity_ids: List[int],
-    since: date,
+    since: Optional[date],
     country: Optional[str] = None,
 ) -> dict[int, int]:
+    """Mention count per entity. `since=None` means all-time (no lower bound)."""
     if not entity_ids:
         return {}
     q = (
@@ -107,11 +108,12 @@ def _mentions_in_window(
         .where(
             MentionEntity.entity_type == entity_type,
             MentionEntity.entity_id.in_(entity_ids),
-            Mention.published_at >= since,
             Mention.is_deleted.is_(False),
         )
         .group_by(MentionEntity.entity_id)
     )
+    if since is not None:
+        q = q.where(Mention.published_at >= since)
     if country:
         q = q.where(Mention.country == country)
     return {int(r.entity_id): int(r.c) for r in db.execute(q).fetchall()}
@@ -121,13 +123,14 @@ def _engagement_weighted_sentiment(
     db: Session,
     entity_type: str,
     entity_id: int,
-    since: date,
+    since: Optional[date],
     country: Optional[str],
 ) -> tuple[float, int]:
     """Returns (sentiment_score_0_1, sample_size).
 
     Each mention contributes (1 + log(1+engagement)) weight. Positive +1,
     neutral +0.5, negative 0. Final is mean-weighted, clamped 0–1.
+    `since=None` means all-time (no lower bound).
     """
     import math
     q = (
@@ -140,10 +143,11 @@ def _engagement_weighted_sentiment(
         .where(
             MentionEntity.entity_type == entity_type,
             MentionEntity.entity_id == entity_id,
-            Mention.published_at >= since,
             Mention.is_deleted.is_(False),
         )
     )
+    if since is not None:
+        q = q.where(Mention.published_at >= since)
     if country:
         q = q.where(Mention.country == country)
     rows = db.execute(q).fetchall()
@@ -188,16 +192,39 @@ def _sales_velocity(
     return int(db.execute(q).scalar() or 0)
 
 
-def _proxy_adoption_signals(
+def _sales_velocity_bulk(
     db: Session,
     brand_ids: List[int],
     since: date,
     country: Optional[str],
 ) -> dict[int, int]:
+    """Units sold per brand across the peer set, in one query (vs N per-brand calls)."""
+    if not brand_ids:
+        return {}
+    q = (
+        select(Product.brand_id, func.coalesce(func.sum(PharmacySale.quantity), 0))
+        .join(Product, Product.id == PharmacySale.product_id)
+        .where(Product.brand_id.in_(brand_ids), PharmacySale.sale_date >= since)
+        .group_by(Product.brand_id)
+    )
+    if country:
+        from models.pharmacy import Pharmacy
+        q = q.join(Pharmacy, Pharmacy.id == PharmacySale.pharmacy_id).where(
+            Pharmacy.country == country
+        )
+    return {int(bid): int(qty or 0) for bid, qty in db.execute(q).fetchall()}
+
+
+def _proxy_adoption_signals(
+    db: Session,
+    brand_ids: List[int],
+    since: Optional[date],
+    country: Optional[str],
+) -> dict[int, int]:
     """Proxy uptake signal per brand when pharmacy_sales is unavailable.
 
     Equal-weighted blend of real signals we DO have (confirmed design):
-        purchase_intent mentions + review-source mentions (app_store/trustpilot)
+        purchase_intent mentions + review-source mentions (app_store/farmaline/medimarket)
         + recommendation mentions (intent OR topic)
     Returned per brand; the caller turns it into a share vs category peers, just
     like Awareness. Documented proxy — never fabricated sales.
@@ -205,7 +232,10 @@ def _proxy_adoption_signals(
     if not brand_ids:
         return {}
     from models.mention import Intent, Topic
-    review_sources = ("app_store", "trustpilot")
+    # Belgian pharmacy reviews (farmaline/medimarket) are our primary consumer
+    # uptake signal — a review IS a purchase. Include them alongside the generic
+    # app-store source so adoption reflects real review volume.
+    review_sources = ("app_store", "farmaline", "medimarket")
     q = (
         select(MentionEntity.entity_id, Mention.source_type,
                MentionClassification.intent, MentionClassification.topic)
@@ -215,10 +245,11 @@ def _proxy_adoption_signals(
         .where(
             MentionEntity.entity_type == "brand",
             MentionEntity.entity_id.in_(brand_ids),
-            Mention.published_at >= since,
             Mention.is_deleted.is_(False),
         )
     )
+    if since is not None:
+        q = q.where(Mention.published_at >= since)
     if country:
         q = q.where(Mention.country == country)
     signals: dict[int, int] = {bid: 0 for bid in brand_ids}
@@ -267,8 +298,29 @@ def _category_peers(db: Session, brand: Brand) -> List[int]:
         from core.framework_catalog import category_family
         fam = category_family(brand.category)
         rows = db.execute(select(Brand.id, Brand.category)).fetchall()
-        return [int(r[0]) for r in rows
-                if r[1] is not None and category_family(r[1]) == fam]
+        fam_peers = [int(r[0]) for r in rows
+                     if r[1] is not None and category_family(r[1]) == fam]
+        if len(fam_peers) > 1:
+            return fam_peers
+
+    # Final fallback: the imported supplier brands have no fine-grained `category`,
+    # but they DO carry a 5-code `primary_category` (NUT/RX/PAC/PEC/OTC). Use the
+    # brands in that same primary category that actually have linked data as the
+    # competitive set — otherwise a supplier brand is wrongly treated as the sole
+    # brand in its space and Awareness/Adoption/Market-fit collapse to 100/neutral.
+    # Bounded to has-data brands so the per-peer sales loop stays cheap and the
+    # share is meaningful (you only compete for voice with brands that have voice).
+    if getattr(brand, "primary_category", None):
+        rows = db.execute(
+            select(Brand.id).where(
+                Brand.primary_category == brand.primary_category,
+                Brand.id.in_(
+                    select(MentionEntity.entity_id)
+                    .where(MentionEntity.entity_type == "brand")
+                ),
+            )
+        ).fetchall()
+        return [int(r[0]) for r in rows]
     return []
 
 
@@ -288,8 +340,15 @@ def compute_bpi(
     if brand_id not in peers:
         peers.append(brand_id)
 
+    # The corpus is fundamentally a historical pharmacy-review archive with only
+    # sporadic recent ingestion, so a 90-day window leaves the share metrics empty
+    # or skewed (a brand whose reviews are 2-3 years old looks dead next to one that
+    # just got a news hit). The BPI is a standing potential index, not a momentum
+    # read, so awareness / adoption / market-fit / sentiment are computed all-time.
+    voice_since: Optional[date] = None
+
     # ── Awareness ────────────────────────────────────────────────────────────
-    mention_counts = _mentions_in_window(db, "brand", peers, since, country)
+    mention_counts = _mentions_in_window(db, "brand", peers, voice_since, country)
     my_mentions = mention_counts.get(brand_id, 0)
     peer_total = sum(mention_counts.values())
     if peer_total:
@@ -298,7 +357,9 @@ def compute_bpi(
         awareness = 0.5  # no peer data → neutral
 
     # ── Adoption (pharmacy sales velocity vs peers) ──────────────────────────
-    peer_sales = {pid: _sales_velocity(db, pid, since, country) for pid in peers}
+    # One aggregate query over all peers — a per-peer loop is hundreds of round
+    # trips once the primary-category fallback widens the peer set.
+    peer_sales = _sales_velocity_bulk(db, peers, since, country)
     my_sales = peer_sales.get(brand_id, 0)
     sales_total = sum(peer_sales.values())
     adoption_is_proxy = False
@@ -307,8 +368,8 @@ def compute_bpi(
         adoption = my_sales / sales_total
     else:
         # No pharmacy_sales wired → fall back to the documented proxy uptake
-        # signal (purchase intent + reviews + advocacy), shared vs peers.
-        proxy = _proxy_adoption_signals(db, peers, since, country)
+        # signal (purchase intent + reviews + advocacy), shared vs peers, all-time.
+        proxy = _proxy_adoption_signals(db, peers, voice_since, country)
         proxy_total = sum(proxy.values())
         if proxy_total:
             adoption = proxy.get(brand_id, 0) / proxy_total
@@ -319,7 +380,7 @@ def compute_bpi(
 
     # ── Sentiment ────────────────────────────────────────────────────────────
     sentiment, sentiment_n = _engagement_weighted_sentiment(
-        db, "brand", brand_id, since, country
+        db, "brand", brand_id, voice_since, country
     )
 
     # ── Market Fit ───────────────────────────────────────────────────────────

@@ -48,9 +48,6 @@ class Settings(BaseSettings):
     # ── YouTube ──────────────────────────────────────────────────────────────
     YOUTUBE_API_KEY: Optional[str] = None
 
-    # ── Trustpilot (Phase 3 patient-review source) ───────────────────────────
-    TRUSTPILOT_API_KEY: Optional[str] = None
-
     # ── Licensed social API (Tier 3) ─────────────────────────────────────────
     LICENSED_API_PROVIDER: Optional[str] = None
     LICENSED_API_KEY: Optional[str] = None

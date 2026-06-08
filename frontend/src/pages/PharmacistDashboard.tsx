@@ -1,17 +1,12 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "../api/client";
 import { TrendingUp, Package, AlertCircle, Download, CheckCircle, X, Search, Loader2, ShoppingCart, AlertTriangle } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
 import FrameworkKpiSection from "../components/FrameworkKpiSection";
+import BrandPicker, { type PickerBrand } from "../components/BrandPicker";
+import RoleBanner from "../components/RoleBanner";
 import { useAuth } from "../hooks/useAuth";
-
-function useFrameworkBrands() {
-  return useQuery({
-    queryKey: ["catalog-my-brands"],
-    queryFn: () => apiClient.get("/catalog/my-brands").then((r) => r.data),
-  });
-}
 
 function useDashboard() {
   return useQuery({
@@ -96,16 +91,9 @@ export default function PharmacistDashboard() {
   const [drugInput, setDrugInput] = useState("");
   const [drugQuery, setDrugQuery] = useState("");
 
-  // Framework brand picker — the workbook's pharmacist-interest brands.
-  const { data: fwBrandsResp } = useFrameworkBrands();
-  const fwBrands: any[] = fwBrandsResp?.brands ?? [];
+  // Brand picker — any of the ~2k classified brands, organised by category.
   const [brandId, setBrandId] = useState<number | null>(null);
-  useEffect(() => {
-    if (brandId == null && fwBrands.length) {
-      const withData = fwBrands.find((b) => b.has_data);
-      setBrandId((withData ?? fwBrands[0]).id);
-    }
-  }, [fwBrands, brandId]);
+  const [activeBrand, setActiveBrand] = useState<PickerBrand | null>(null);
   // Admins on this page view-as pharmacist; pharmacists are locked server-side.
   const frameworkRole = user?.role === "admin" ? "pharmacist" : undefined;
 
@@ -155,6 +143,7 @@ export default function PharmacistDashboard() {
 
   return (
     <div className="space-y-6">
+      <RoleBanner />
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">{dashboard?.pharmacy_name ?? "My Pharmacy"}</h1>
@@ -192,29 +181,27 @@ export default function PharmacistDashboard() {
         ))}
       </div>
 
-      {/* Tracked brands + role-scoped KPIs */}
-      {fwBrands.length > 0 && (
-        <div className="space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h2 className="text-lg font-bold text-gray-900">Brand intelligence</h2>
-              <p className="text-sm text-gray-500">Pick a tracked brand to see your pharmacist KPIs and patient signals.</p>
-            </div>
-            <select
-              value={brandId ?? ""}
-              onChange={(e) => setBrandId(Number(e.target.value))}
-              className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
-            >
-              {fwBrands.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.name}{b.category ? ` · ${b.category}` : ""}{b.has_data ? "" : " (no data yet)"}
-                </option>
-              ))}
-            </select>
+      {/* Brand intelligence — pick any classified brand by category */}
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-bold text-gray-900">Brand intelligence</h2>
+            <p className="text-sm text-gray-500">Pick a brand by category to see your pharmacist KPIs and patient signals.</p>
           </div>
-          <FrameworkKpiSection brandId={brandId} role={frameworkRole} />
+          <BrandPicker
+            value={brandId}
+            selectedBrand={activeBrand}
+            onSelect={(b) => { setBrandId(b.id); setActiveBrand(b); }}
+          />
         </div>
-      )}
+        {activeBrand && !activeBrand.has_data && (
+          <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-2.5 text-sm text-amber-800">
+            No data linked to <strong>{activeBrand.name}</strong> yet — KPIs that depend on reviews or
+            ingested signals will read “Connect feed” until the corpus grows.
+          </div>
+        )}
+        <FrameworkKpiSection brandId={brandId} role={frameworkRole} />
+      </div>
 
       {trendData.length > 0 && (
         <div className="bg-white rounded-xl border border-gray-200 p-5">

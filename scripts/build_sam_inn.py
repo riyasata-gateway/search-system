@@ -1,22 +1,31 @@
-"""Build an authoritative brand → active-substance (INN) map from the SAM export.
+"""Build an authoritative brand → SAM-data map from the SAM export.
 
 SAM (Authentic Source of Medicines, FAGG/eHealth) is Belgium's official medicines
 database — it maps every Belgian trade name (AMP = Actual Medicinal Product) to its
-active substance(s). This replaces the curated/static INN guesses with ground truth.
+active substance(s), ATC, packs (CNK), price, reimbursement, market status, and the
+marketing-authorisation holder (Company). The NONMEDICINAL table covers parapharmacy
+/ cosmetics (CNK + producer). So SAM can enrich brands across ALL categories, not
+just medicines.
 
-The full export's AMP file is ~1.6 GB, so we **stream-parse** it (iterparse, clearing
-each element) and keep only the substances for our tracked framework brands. Output:
-`data/sam/brand_inn.json` = {brand_name: [substances...]}. Brands with no AMP match
-are genuinely *not medicines* in Belgium (cosmetics/supplements) → correctly absent.
+Originally this matched only the ~31 framework brands. It now matches **every**
+catalogue brand so the newly-imported supplier brands get their SAM data too. Output:
+`data/sam/brand_inn.json` keyed by brand name; `data/sam/pack_index.json` keyed by CNK.
 
-Usage:  .venv/bin/python scripts/build_sam_inn.py [--zip data/sam/sam-12035.zip]
+Matching: the brand is (almost) always the leading word(s) of the SAM OfficialName
+("Nurofen 200 mg …"), so we test the leading 1–4 word n-grams of each product name
+against the brand-candidate set — O(1) dict lookups, vs an O(AMP × brands) startswith
+scan that doesn't scale to 2k brands.
+
+Usage:  .venv/bin/python scripts/build_sam_inn.py [--zip data/sam/sam-12035.zip] [--framework-only]
 """
 import argparse
 import json
 import os
 import sys
+import unicodedata
 import zipfile
 from collections import defaultdict
+from datetime import date
 from xml.etree import ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -28,9 +37,7 @@ from core.config import settings
 from models.brand import Brand
 
 OUT = "data/sam/brand_inn.json"
-
-
-import unicodedata
+_MAX_NGRAM = 4
 
 
 def _local(tag: str) -> str:
@@ -47,35 +54,56 @@ def _brand_candidates(name: str):
         cands.update(p.strip() for p in name.split("/"))
     if "(" in name:
         cands.add(name.split("(")[0].strip())
-        # also names inside parens, e.g. "UCB brands (Keppra, Bimzelx)"
         inside = name[name.find("(") + 1:name.rfind(")")]
         cands.update(p.strip() for p in inside.replace(" brands", "").split(","))
     return sorted({c.lower() for c in cands if len(c) >= 3})
 
 
+def _match(name_lower: str, cand_to_brand: dict):
+    """Return the brand whose candidate is a leading word n-gram of name_lower."""
+    words = name_lower.split()
+    for n in range(min(_MAX_NGRAM, len(words)), 0, -1):  # longest leading n-gram first
+        key = " ".join(words[:n])
+        bn = cand_to_brand.get(key)
+        if bn:
+            return bn
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--zip", default="data/sam/sam-12035.zip")
+    ap.add_argument("--framework-only", action="store_true",
+                    help="restrict to the workbook framework brands (legacy behaviour)")
     args = ap.parse_args()
 
     engine = create_engine(settings.DATABASE_SYNC_URL)
     with Session(engine) as db:
-        brands = db.execute(select(Brand).where(Brand.category.isnot(None))).scalars().all()
-    # candidate(lower) -> brand.name
+        q = select(Brand)
+        if args.framework_only:
+            q = q.where(Brand.category.isnot(None))
+        brands = db.execute(q).scalars().all()
+    # candidate(lower) -> brand.name  (longer brands processed last → win on collision)
     cand_to_brand = {}
-    for b in brands:
+    for b in sorted(brands, key=lambda x: len(x.name)):
         for cand in _brand_candidates(b.name):
             cand_to_brand[cand] = b.name
-    cands = sorted(cand_to_brand, key=len, reverse=True)  # longest first
-    print(f"Matching {len(brands)} framework brands ({len(cands)} name candidates) against SAM AMP…")
+    cand_to_brand_da = {_deaccent(c): bn for c, bn in cand_to_brand.items()}
+    print(f"Matching {len(brands)} brands ({len(cand_to_brand)} name candidates) against SAM…")
 
     z = zipfile.ZipFile(args.zip)
     amp_entry = [n for n in z.namelist() if n.startswith("AMP-")][0]
 
     brand_data = defaultdict(lambda: {"subs": set(), "cnk": set(), "atc": {},
                                       "prices": [], "reimb": [], "bt": False, "mtype": None,
-                                      "statuses": set(), "comm": set()})
-    pack_index = {}  # cnk -> {fr, nl, brand, kind, substance, atc} — canonical pack backbone
+                                      "statuses": set(), "comm": set(), "company": None,
+                                      "supply": [], "limited": False, "eoc": set()})
+    # Supplier/MAH portfolio: brands matched by Company/Producer name (not product
+    # name) — the manufacturer's registered range. Key for B2B supplier brands,
+    # which are companies, not trade names, so they never match a product OfficialName.
+    portfolio = defaultdict(lambda: {"med_products": 0, "para_products": 0, "atc": set(),
+                                     "supply": 0})
+    pack_index = {}  # cnk -> {fr, nl, brand, kind, substance, atc}
     amp_count = 0
     with z.open(amp_entry) as f:
         for _, elem in ET.iterparse(f, events=("end",)):
@@ -128,29 +156,77 @@ def main():
                             name_nl = c.text
                     if is_active and (name_en or name_nl):
                         subs.append((rank, (name_en or name_nl).strip()))
+            # Belgian supply signal (the highest-value availability source we hold):
+            # SupplyProblem → dated Data blocks {from, ExpectedEndOn, Reason, Impact};
+            # plus LimitedAvailability and temporary/definitive end-of-commercialisation.
+            supply_list = []
+            limited = False
+            eoc_set = set()
+            for node in elem.iter():
+                ln = _local(node.tag)
+                if ln == "SupplyProblem":
+                    for data in node:
+                        if _local(data.tag) != "Data":
+                            continue
+                        frm = data.get("from")
+                        end = reason = None
+                        for child in data:
+                            cl = _local(child.tag)
+                            if cl == "ExpectedEndOn" and child.text:
+                                end = child.text.strip()
+                            elif cl == "Reason":
+                                reason = next((g.text for g in child
+                                               if _local(g.tag) == "En" and g.text), None)
+                        supply_list.append({"from": frm, "end": end, "reason": reason})
+                elif ln == "LimitedAvailability" and (node.text or "").strip() == "true":
+                    limited = True
+                elif ln == "EndOfCommercialization":
+                    en = next((g.text for g in node if _local(g.tag) == "En" and g.text), None)
+                    if en:
+                        eoc_set.add(en)
+
+            # Marketing-authorisation holder (Company → Denomination) — extracted
+            # for every AMP so we can both stamp the matched brand's MAH and roll a
+            # supplier brand's portfolio up by company.
+            company_den = None
+            comp = elem.find("{*}Data/{*}Company")
+            if comp is not None:
+                den = comp.find("{*}Denomination")
+                if den is not None and den.text:
+                    company_den = den.text.strip()
+            # Supplier brand matched by its MAH/company name → portfolio roll-up.
+            if company_den:
+                pb = _match(company_den.lower(), cand_to_brand)
+                if pb:
+                    portfolio[pb]["med_products"] += 1
+                    portfolio[pb]["atc"].update(atcs.keys())
+                    if supply_list:
+                        portfolio[pb]["supply"] += 1
+
             if official:
-                ol = official.lower()
-                for cand in cands:
-                    if ol.startswith(cand):
-                        bn = cand_to_brand[cand]
-                        dat = brand_data[bn]
-                        dat["subs"].update(subs); dat["cnk"].update(cnks)
-                        dat["atc"].update(atcs); dat["prices"].extend(prices)
-                        dat["reimb"].extend(reimb); dat["bt"] = dat["bt"] or bt
-                        dat["statuses"].update(statuses); dat["comm"].update(comm)
-                        if mtype:
-                            dat["mtype"] = mtype
-                        # Bilingual per-CNK pack index (canonical entity backbone).
-                        nl_el = elem.find("{*}Data/{*}Name/{*}Nl")
-                        name_nl = nl_el.text if nl_el is not None else None
-                        prim = sorted({s for rk, s in subs if rk == "1"}) or sorted({s for _, s in subs})
-                        for ck in cnks:
-                            pack_index[ck.lstrip("0")] = {
-                                "fr": official, "nl": name_nl, "brand": bn, "kind": "medicine",
-                                "substance": prim[0] if prim else None,
-                                "atc": (sorted(atcs)[0] if atcs else None),
-                            }
-                        break
+                bn = _match(official.lower(), cand_to_brand)
+                if bn:
+                    dat = brand_data[bn]
+                    dat["subs"].update(subs); dat["cnk"].update(cnks)
+                    dat["atc"].update(atcs); dat["prices"].extend(prices)
+                    dat["reimb"].extend(reimb); dat["bt"] = dat["bt"] or bt
+                    dat["statuses"].update(statuses); dat["comm"].update(comm)
+                    if mtype:
+                        dat["mtype"] = mtype
+                    if dat["company"] is None:
+                        dat["company"] = company_den
+                    dat["supply"].extend(supply_list)
+                    dat["limited"] = dat["limited"] or limited
+                    dat["eoc"].update(eoc_set)
+                    nl_el = elem.find("{*}Data/{*}Name/{*}Nl")
+                    name_nl = nl_el.text if nl_el is not None else None
+                    prim = sorted({s for rk, s in subs if rk == "1"}) or sorted({s for _, s in subs})
+                    for ck in cnks:
+                        pack_index[ck.lstrip("0")] = {
+                            "fr": official, "nl": name_nl, "brand": bn, "kind": "medicine",
+                            "substance": prim[0] if prim else None,
+                            "atc": (sorted(atcs)[0] if atcs else None),
+                        }
             elem.clear()
             if amp_count % 80000 == 0:
                 print(f"  …scanned {amp_count} AMPs")
@@ -158,8 +234,6 @@ def main():
     # ── Pass 2: NONMEDICINAL registry (parapharmacy/cosmetics) — CNK + producer ─
     nm_entry = [n for n in z.namelist() if n.startswith("NONMEDICINAL")][0]
     nm_data = defaultdict(lambda: {"cnk": set(), "producer": None, "count": 0})
-    cands_da = {_deaccent(c): cand_to_brand[c] for c in cands}
-    nm_cands = sorted(cands_da, key=len, reverse=True)
     with z.open(nm_entry) as f:
         for _, elem in ET.iterparse(f, events=("end",)):
             if _local(elem.tag) != "NonMedicinalProduct":
@@ -177,22 +251,23 @@ def main():
                     producer = next((c.text for c in d if c.text), None)
                     break
             if name:
-                nl = _deaccent(name).lower()
-                for cand in nm_cands:
-                    if nl.startswith(cand):
-                        bn = cands_da[cand]
-                        if code:
-                            nm_data[bn]["cnk"].add(code)
-                            pack_index[code.lstrip("0")] = {
-                                "fr": name_fr or name, "nl": name_nl, "brand": bn,
-                                "kind": "parapharmacy", "substance": None, "atc": None}
-                        nm_data[bn]["count"] += 1
-                        nm_data[bn]["producer"] = nm_data[bn]["producer"] or producer
-                        break
+                bn = _match(_deaccent(name).lower(), cand_to_brand_da)
+                if bn:
+                    if code:
+                        nm_data[bn]["cnk"].add(code)
+                        pack_index[code.lstrip("0")] = {
+                            "fr": name_fr or name, "nl": name_nl, "brand": bn,
+                            "kind": "parapharmacy", "substance": None, "atc": None}
+                    nm_data[bn]["count"] += 1
+                    nm_data[bn]["producer"] = nm_data[bn]["producer"] or producer
+            # Supplier brand matched by the product's Producer → parapharmacy portfolio.
+            if producer:
+                pb = _match(_deaccent(producer).lower(), cand_to_brand_da)
+                if pb:
+                    portfolio[pb]["para_products"] += 1
             elem.clear()
 
     # ── Pass 3: RMB reimbursement detail (category / co-pay / reference price) ─
-    # RMB is keyed by CNK; map each framework brand's CNKs → reimbursement detail.
     cnk_to_brand = {}
     for b, dat in brand_data.items():
         for c in dat["cnk"]:
@@ -223,10 +298,33 @@ def main():
             elem.clear()
 
     # ── Merge into output ────────────────────────────────────────────────────
+    today = date.today().isoformat()
+
+    def _supply_summary(dat):
+        sp = dat.get("supply") or []
+        # Active = started on/before today and not past its expected end.
+        active = [s for s in sp
+                  if (s.get("from") or "9999") <= today
+                  and (not s.get("end") or s.get("end") >= today)]
+        eoc = dat.get("eoc") or set()
+        eoc_status = ("temporary" if any("Temporary" in e or "temporaire" in e.lower() for e in eoc)
+                      else "definitive" if any("Definitive" in e or "définit" in e.lower() for e in eoc)
+                      else None)
+        if not (sp or dat.get("limited") or eoc_status):
+            return None
+        return {
+            "active_problems": len(active),
+            "reason": (active[0].get("reason") if active else None),
+            "expected_end": min((s["end"] for s in active if s.get("end")), default=None),
+            "limited_availability": bool(dat.get("limited")),
+            "end_of_commercialisation": eoc_status,
+        }
+
     result = {}
-    for b in set(brand_data) | set(nm_data):
+    for b in set(brand_data) | set(nm_data) | set(portfolio):
         dat = brand_data.get(b, {})
         nm = nm_data.get(b, {})
+        pf = portfolio.get(b)
         prices = dat.get("prices") or []
         reimb = dat.get("reimb") or []
         is_med = bool(dat.get("subs") or dat.get("atc"))
@@ -245,12 +343,23 @@ def main():
             "total_priced_packs": len(reimb),
             "nonmedicinal_skus": nm.get("count", 0),
             "producer": nm.get("producer"),
-            # commercialisation / market status (AMP)
+            # Marketing-authorisation holder (medicines) or producer (parapharmacy) —
+            # the manufacturer/owner, for B2B / manufacturer roll-ups.
+            "company": dat.get("company") or nm.get("producer"),
+            # Supplier/MAH portfolio: the brand's registered SAM range when it was
+            # matched as a manufacturer/producer (B2B supplier brands).
+            "sam_portfolio": ({
+                "medicines": pf["med_products"],
+                "parapharmacy": pf["para_products"],
+                "atc_classes": sorted({a[:3] for a in pf["atc"] if a}),
+                "supply_problems": pf.get("supply", 0),
+            } if pf and (pf["med_products"] or pf["para_products"]) else None),
+            # Belgian supply / availability signal (SAM SupplyProblem + EoC).
+            "supply": _supply_summary(dat),
             "status": ("AUTHORIZED" if "AUTHORIZED" in dat.get("statuses", set())
                        else (sorted(dat.get("statuses", set()))[0] if dat.get("statuses") else None)),
             "ever_suspended": bool({"SUSPENDED", "WITHDRAWN", "REVOKED"} & dat.get("statuses", set())),
             "commercialised_since": (min(dat.get("comm")) if dat.get("comm") else None),
-            # reimbursement detail (RMB)
             "reimbursement": ({
                 "categories": sorted(reimb_detail[b]["categories"]),
                 "reference_price": (round(min(reimb_detail[b]["ref_prices"]), 2)
@@ -267,16 +376,13 @@ def main():
     pack_path = os.path.join(os.path.dirname(OUT), "pack_index.json")
     with open(pack_path, "w", encoding="utf-8") as fh:
         json.dump(pack_index, fh, ensure_ascii=False)
-    print(f"Wrote {pack_path} ({len(pack_index)} CNK packs, FR/NL labels)")
 
-    print(f"\nScanned {amp_count} AMPs + NONMEDICINAL. Resolved {len(result)} framework brands:")
-    for b in sorted(result):
-        r = result[b]
-        kind = "medicine" if r["is_medicine"] else "parapharmacy"
-        price = f"€{r['price']['min']}-{r['price']['max']}" if r["price"] else "—"
-        print(f"  {b:30s} {kind:12s} INN={r['primary'] or '-'}  ATC={[a['code'] for a in r['atc']]}  "
-              f"CNK={len(r['cnk'])}  price={price}  reimb={r['reimbursed_packs']}/{r['total_priced_packs']}  BT={r['black_triangle']}")
-    print(f"\nWrote {OUT}")
+    n_med = sum(1 for r in result.values() if r["is_medicine"])
+    n_para = sum(1 for r in result.values() if not r["is_medicine"] and r["nonmedicinal_skus"])
+    n_company = sum(1 for r in result.values() if r["company"])
+    print(f"\nScanned {amp_count} AMPs + NONMEDICINAL. Resolved {len(result)} brands "
+          f"({n_med} medicines, {n_para} parapharmacy, {n_company} with a company/MAH).")
+    print(f"Wrote {OUT} and {pack_path} ({len(pack_index)} CNK packs).")
 
 
 if __name__ == "__main__":

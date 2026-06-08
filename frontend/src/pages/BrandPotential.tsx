@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Cell,
@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { apiClient } from "../api/client";
 import InfoTip from "../components/InfoTip";
+import BrandPicker, { type PickerBrand } from "../components/BrandPicker";
 import { define } from "../lib/glossary";
 
 // ── types ────────────────────────────────────────────────────────────────────
@@ -28,15 +29,6 @@ interface Bundle {
   name: string;
   metrics: MetricEnvelope[];
   context: Record<string, any>;
-}
-
-interface Brand {
-  id: number;
-  name: string;
-  category?: string | null;
-  manufacturer?: string;
-  has_data?: boolean;
-  is_medicine?: boolean;
 }
 
 interface NBAItem {
@@ -127,27 +119,12 @@ function SectionCard({
 
 export default function BrandPotential() {
   const [brandId, setBrandId] = useState<number | null>(null);
+  // Brand chosen via the category picker (any of the ~2k classified brands).
+  const [selectedBrand, setSelectedBrand] = useState<PickerBrand | null>(null);
   // Product market is Belgium — default the lens there.
   const [country, setCountry] = useState<string>("BE");
   // Optimistic local state so action buttons give immediate feedback.
   const [decided, setDecided] = useState<Record<string, string>>({});
-
-  // 1. Brand list — the role's tracked (framework) brands, which actually have
-  //    linked data. (The legacy all-brands list included seed brands like Advil
-  //    with zero mentions, so every engine came back empty.)
-  const { data: brandResp } = useQuery<{ brands: Brand[] }>({
-    queryKey: ["catalog-my-brands"],
-    queryFn: () => apiClient.get("/catalog/my-brands").then((r) => r.data),
-  });
-  const brands = brandResp?.brands ?? [];
-
-  // Default to the first brand that has data once loaded.
-  useEffect(() => {
-    if (brandId == null && brands.length > 0) {
-      const withData = brands.find((b) => b.has_data);
-      setBrandId((withData ?? brands[0]).id);
-    }
-  }, [brands, brandId]);
 
   const params = useMemo(() => (country ? { country } : {}), [country]);
 
@@ -198,7 +175,6 @@ export default function BrandPotential() {
       }),
   });
 
-  const selectedBrand = brands?.find((b) => b.id === brandId);
   const brandName = selectedBrand?.name ?? "—";
   const isMedicine = selectedBrand?.is_medicine ?? true; // default permissive until loaded
   const lifecycleStage: string = lifecycle?.context?.stage ?? "—";
@@ -263,15 +239,11 @@ export default function BrandPotential() {
 
           {/* Brand + country selectors */}
           <div className="flex flex-wrap gap-2">
-            <select
-              value={brandId ?? ""}
-              onChange={(e) => setBrandId(Number(e.target.value))}
-              className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm shadow-soft focus:outline-none focus:border-accent-400"
-            >
-              {brands?.map((b) => (
-                <option key={b.id} value={b.id}>{b.name}</option>
-              ))}
-            </select>
+            <BrandPicker
+              value={brandId}
+              selectedBrand={selectedBrand}
+              onSelect={(b) => { setBrandId(b.id); setSelectedBrand(b); }}
+            />
             <select
               value={country}
               onChange={(e) => setCountry(e.target.value)}

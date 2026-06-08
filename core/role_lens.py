@@ -76,11 +76,11 @@ _OTHER_TIER = 9
 _SOURCE_TIERS: Dict[str, list] = {
     PHARMACIST: [
         # T0 — official safety & supply: the dispensing counter's first read
-        {"belgium_health", "fagg_shortage", "ansm_shortage", "ansm_safety", "ansm", "eudravigilance"},
+        {"belgium_health", "fagg_shortage", "ansm_shortage", "ansm_safety", "ansm", "eudravigilance", "safety_gate"},
         # T1 — clinical evidence & regulated patient info
         {"openfda", "pubmed", "bcfi_cbip", "belgium_hcp", "data_gov_be"},
         # T2 — lived patient experience
-        {"doctissimo", "forum", "trustpilot", "app_store", "reddit", "clinical_trials"},
+        {"doctissimo", "forum", "app_store", "reddit", "clinical_trials"},
         # T3 — general reference / reach (least relevant to dispensing)
         {"wikipedia", "news", "google_trends", "youtube"},
     ],
@@ -88,9 +88,9 @@ _SOURCE_TIERS: Dict[str, list] = {
         # T0 — reach, engagement & buzz: where campaign signal actually lives
         {"youtube", "google_trends", "reddit", "news"},
         # T1 — consumer voice / reviews
-        {"app_store", "trustpilot", "forum", "doctissimo"},
+        {"app_store", "forum", "doctissimo"},
         # T2 — reputational-risk watch & reference
-        {"eudravigilance", "wikipedia"},
+        {"eudravigilance", "wikipedia", "safety_gate"},
         # T3 — clinical/regulatory (secondary for campaigns)
         {"belgium_health", "pubmed", "clinical_trials", "openfda", "ansm", "ansm_safety", "bcfi_cbip"},
     ],
@@ -101,7 +101,7 @@ _SOURCE_TIERS: Dict[str, list] = {
         {"youtube", "pubmed", "clinical_trials", "reddit", "eudravigilance"},
         # T2 — supply / reimbursement / reputation → market shifts
         {"fagg_shortage", "ansm_shortage", "ansm_safety", "ansm", "bcfi_cbip",
-         "belgium_health", "trustpilot", "wikipedia", "app_store", "forum", "doctissimo", "openfda"},
+         "belgium_health", "wikipedia", "app_store", "forum", "doctissimo", "openfda"},
     ],
     ADMIN: [],  # neutral: no source priority → order by freshness only
 }

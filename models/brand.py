@@ -37,6 +37,22 @@ class Brand(Base, TimestampMixin):
     # Populated by scripts/seed_brand_catalog.py from core/framework_catalog.py.
     # `manufacturer` doubles as the workbook's "Owner".
     category: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    # ── Belgian supplier taxonomy (5-code primary category) ──────────────────
+    # A coarser, MECE classification axis (NUT/RX/PAC/PEC/OTC) imported from the
+    # supplier-categorisation workbook. Distinct from `category` above, which is
+    # the fine-grained *competitive family* (e.g. "Dermocosmetics") used for
+    # peer-set / share-of-voice math — overwriting that would collapse all peers.
+    # Powers the Brand Catalog browse/filter. See core.framework_catalog.PRIMARY_CATEGORIES.
+    primary_category: Mapped[Optional[str]] = mapped_column(
+        String(8), nullable=True, index=True,
+        comment="Primary supplier category code: NUT|RX|PAC|PEC|OTC",
+    )
+    category_confidence: Mapped[Optional[str]] = mapped_column(
+        String(16), nullable=True, comment="Classification confidence: High|Medium"
+    )
+    category_rationale: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True, comment="Why this primary_category was assigned"
+    )
     tier_a_signal: Mapped[Optional[str]] = mapped_column(
         Text, nullable=True, comment="Public-web (Tier A) signals available for this brand"
     )

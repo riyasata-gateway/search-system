@@ -40,12 +40,15 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* Workspace canvas — layered radial glows + faint grid for that terminal feel. */
+/* Workspace canvas — layered radial glows + faint grid for that terminal feel.
+   The two top glows pick up the active role's accent (--role-accent-rgb, set on
+   the app shell in Layout.tsx) so the whole workspace re-tints per role; the
+   foot glow stays cyan as a constant ambient. Falls back to brand blue/violet. */
 .surface-app {
   background-color: var(--bg);
   background-image:
-    radial-gradient(1100px 600px at 6% -10%, rgba(91,134,255,0.16), transparent 55%),
-    radial-gradient(900px 600px at 108% 4%, rgba(164,134,255,0.16), transparent 55%),
+    radial-gradient(1100px 600px at 6% -10%, rgba(var(--role-accent-rgb, 91,134,255),0.15), transparent 55%),
+    radial-gradient(900px 600px at 108% 4%, rgba(var(--role-accent-rgb, 164,134,255),0.13), transparent 55%),
     radial-gradient(700px 500px at 50% 120%, rgba(52,211,238,0.08), transparent 60%),
     linear-gradient(rgba(148,163,184,0.04) 1px, transparent 1px),
     linear-gradient(90deg, rgba(148,163,184,0.04) 1px, transparent 1px);

@@ -1,0 +1,821 @@
+"""Resolve live values for the workbook KPI library, per brand.
+
+The framework (`core/framework_catalog.KPI_LIBRARY`) declares, for each role, the
+KPIs the Datatopia workbook says that role cares about — each tagged with a
+`data_status`:
+
+  • "live"        — we can compute a real number today from ingested data
+  • "partial"     — an engine runs but the proprietary leg is thin
+  • "data_needed" — a Tier-C feed (sell-out / IQVIA / Farmanet …) isn't connected
+
+This module fills in the *values* for the live/partial KPIs of one brand, reusing
+the existing intelligence engines and the linked review corpus. `data_needed`
+KPIs get no value here — the API returns them with a "Connect feed" marker so the
+UI is honest about what is and isn't wired, instead of fabricating a number.
+
+Keyed by the stable `key` field on each KPI_LIBRARY entry.
+"""
+from __future__ import annotations
+
+from typing import Dict, Optional
+
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+from models.brand import Brand
+
+
+def _human(n: float) -> str:
+    """13629 -> '13.6k'; 950 -> '950'."""
+    n = float(n)
+    if n >= 1000:
+        return f"{n/1000:.1f}k".replace(".0k", "k")
+    return f"{int(round(n))}"
+
+
+def _headline(engine_result) -> Optional[dict]:
+    """First metric of an engine bundle, or None when the engine had no data."""
+    if engine_result is None:
+        return None
+    try:
+        metrics = engine_result.to_bundle().to_dict().get("metrics") or []
+    except Exception:
+        return None
+    return metrics[0] if metrics else None
+
+
+def compute_live_values(db: Session, brand: Brand) -> Dict[str, dict]:
+    """Return {kpi_key: {value, display, detail}} for the live/partial KPIs.
+
+    Only keys we can back with real data are returned; everything else falls
+    through to the "Connect feed" path in the router.
+    """
+    bid = brand.id
+    out: Dict[str, dict] = {}
+
+    # ── Review base: linked reviews, avg rating, sentiment split ──────────────
+    base = db.execute(text("""
+        SELECT count(*)                                        AS linked,
+               count(m.rating)                                 AS rated,
+               coalesce(avg(m.rating), 0)                      AS avg_rating,
+               count(mc.id)                                    AS classified,
+               sum((mc.sentiment = 'positive')::int)          AS pos,
+               sum((mc.sentiment = 'negative')::int)          AS neg
+        FROM mention_entities me
+        JOIN mentions m ON m.id = me.mention_id
+        LEFT JOIN mention_classifications mc ON mc.mention_id = m.id
+        WHERE me.entity_type = 'brand' AND me.entity_id = :bid
+    """), {"bid": bid}).mappings().first()
+
+    # Per-source counts for the ingested multi-source signals (PubMed, trials,
+    # openFDA, news) linked to this brand.
+    src = db.execute(text("""
+        SELECT m.source_type, count(*) AS cnt
+        FROM mention_entities me
+        JOIN mentions m ON m.id = me.mention_id
+        WHERE me.entity_type = 'brand' AND me.entity_id = :bid
+        GROUP BY m.source_type
+    """), {"bid": bid}).mappings().all()
+    cmap = {r["source_type"]: int(r["cnt"]) for r in src}
+    pubmed = cmap.get("pubmed", 0)
+    trials = cmap.get("clinical_trials", 0)
+    fda = cmap.get("openfda", 0)
+    eudra = cmap.get("eudravigilance", 0)
+    news = cmap.get("rss", 0) + cmap.get("news", 0)
+    forum = cmap.get("forum", 0)
+    bcfi = cmap.get("bcfi", 0) + cmap.get("bcfi_cbip", 0)
+    safety_gate = cmap.get("safety_gate", 0)
+    fagg_short = cmap.get("fagg_shortage", 0)      # Belgian FAGG/AFMPS shortage list
+    ansm_short = cmap.get("ansm_shortage", 0) + cmap.get("ansm", 0)  # French ANSM list
+
+    # Authoritative medicine flag + SAM metadata (ATC, CNK packs).
+    from core.framework_catalog import BRAND_INN
+    from intelligence.inn_resolver import _normalise, is_belgian_medicine, sam_meta
+    is_medicine = is_belgian_medicine(brand.name) or (brand.name in BRAND_INN)
+    meta = sam_meta(brand.name)
+
+    # Therapeutic class (ATC) — brand_manager. Pick the ATC that best represents
+    # the primary single-substance: exact desc match first, then contains, then
+    # the most specific (shortest desc) — so plain Paracetamol (N02BE01) wins over
+    # the codeine combo (N02AJ06).
+    atc_list = meta.get("atc") or []
+    if atc_list:
+        base_inn = _normalise(meta.get("primary") or [])
+
+        def _atc_score(a):
+            d = (a.get("desc") or "").lower()
+            matches = any(k in d for k in base_inn)
+            combo = any(t in d for t in (" and ", "combination", "excl", ","))
+            # best = matches a primary substance AND is a single-substance class
+            rank = 0 if (matches and not combo) else 1 if matches else 2 if not combo else 3
+            return (rank, len(d))
+
+        chosen = sorted(atc_list, key=_atc_score)[0]
+        others = len(atc_list) - 1
+        out["bm_atc_class"] = {
+            "value": chosen["code"],
+            "display": f"{chosen['code']} — {chosen.get('desc') or ''}".strip(" —"),
+            "detail": f"+{others} related ATC class{'es' if others != 1 else ''}" if others else "WHO ATC (SAM)",
+        }
+    elif is_medicine:
+        out["bm_atc_class"] = {"value": None, "display": "—", "detail": "no ATC in SAM"}
+    else:
+        out["bm_atc_class"] = {"value": None, "display": "n/a", "detail": "not a medicine"}
+
+    # Tracked SKUs — count from the canonical CNK pack registry (deduped across
+    # FR/NL and across SAM + retail), falling back to the SAM CNK set.
+    pk = db.execute(text(
+        "SELECT count(*) AS n, count(name_nl) AS bil FROM packs WHERE brand_id = :bid"),
+        {"bid": bid}).mappings().first()
+    n_packs = int(pk["n"]) if pk else 0
+    if n_packs:
+        out["bm_pack_count"] = {"value": n_packs, "display": f"{n_packs} packs",
+                                "detail": f"canonical CNK packs (FR/NL-deduped) · {int(pk['bil'])} bilingual"}
+    elif meta.get("cnk"):
+        out["bm_pack_count"] = {"value": len(meta["cnk"]), "display": f"{len(meta['cnk'])} packs",
+                                "detail": "CNK packs (SAM)"}
+    else:
+        out["bm_pack_count"] = {"value": None, "display": "—", "detail": "no packs tracked"}
+
+    # Reimbursement (BE) — SAM Reimbursable flag + RMB category (A/B/C) detail.
+    rp, tp = meta.get("reimbursed_packs", 0), meta.get("total_priced_packs", 0)
+    rdet = meta.get("reimbursement") or {}
+    cats = rdet.get("categories") or []
+    if is_medicine and tp:
+        pct = round(100 * rp / tp)
+        cat_txt = f" · cat {'/'.join(cats)}" if cats else ""
+        detail = f"{rp}/{tp} packs RIZIV-reimbursed" + ("" if rp else " — typical for OTC")
+        if cats:
+            detail += f" (category {'/'.join(cats)})"
+        out["bm_reimbursement"] = {
+            "value": pct,
+            "display": (f"{pct}% reimbursed{cat_txt}") if rp else "Not reimbursed (OTC)",
+            "detail": detail,
+        }
+    elif not is_medicine:
+        out["bm_reimbursement"] = {"value": None, "display": "n/a", "detail": "parapharmacy — not reimbursable"}
+    else:
+        out["bm_reimbursement"] = {"value": None, "display": "—", "detail": "no pricing in SAM"}
+
+    # Market status (BE) — authorisation + time on market (SAM).
+    status = meta.get("status")
+    since = meta.get("commercialised_since")
+    if is_medicine and status:
+        yr = since[:4] if since else None
+        out["bm_market_status"] = {
+            "value": status,
+            "display": status.title() + (f" · since {yr}" if yr else ""),
+            "detail": (f"on the Belgian market since {since}" if since else "registered in SAM"),
+        }
+    elif not is_medicine:
+        out["bm_market_status"] = {"value": None, "display": "Parapharmacy",
+                                   "detail": "non-medicinal — no marketing authorisation"}
+
+    # ── Belgian retail layer (Farmaline catalogue) — price/promo + availability ─
+    from intelligence.retail import retail_meta
+    rt = retail_meta(brand.name)
+    if rt.get("price"):
+        p = rt["price"]
+        promo = rt.get("promo_pct", 0)
+        out["mk_price_competitiveness"] = {
+            "value": promo,
+            "display": f"€{p['min']}–{p['max']} · {promo}% on promo",
+            "detail": f"avg €{p['avg']}, {rt.get('avg_discount', 0)}% avg discount across {rt.get('skus', 0)} Farmaline SKUs",
+        }
+    elif meta.get("price"):
+        # No online-retail catalogue entry (typical for OTC/Rx medicines, which
+        # the dermo-focused Farmaline scrape didn't cover) — fall back to the
+        # authoritative SAM (FAGG) official list price so the KPI is real, not empty.
+        p = meta["price"]
+        out["mk_price_competitiveness"] = {
+            "value": None,
+            "display": f"€{p['min']}–{p['max']}",
+            "detail": f"avg €{p['avg']} across {tp} packs — SAM (FAGG) official list price"
+                      " (no online-promo feed for this brand)",
+        }
+    if rt.get("skus"):
+        stock = rt.get("in_stock_pct", 0)
+        out["bm_online_availability"] = {
+            "value": stock,
+            "display": f"{stock}% in stock",
+            "detail": f"{rt['skus']} SKUs listed on Farmaline · online rating {rt.get('rating')}★ ({_human(rt.get('rating_count', 0))})",
+        }
+    # Claims & benefit profile (retail descriptions + brand sites).
+    benefits = rt.get("benefits") or []
+    if benefits:
+        peers = [{"name": b["name"], "share": b["share"], "is_self": False} for b in benefits]
+        for u in (rt.get("skin_types") or [])[:2]:
+            peers.append({"name": f"Skin: {u['name']}", "share": u["share"], "is_self": False})
+        top = ", ".join(b["name"] for b in benefits[:3])
+        out["mk_claims_profile"] = {
+            "value": benefits[0]["share"], "display": top,
+            "detail": f"benefit themes across {rt.get('skus', 0)} retail SKUs",
+            "peers": peers, "peers_label": "Benefit themes (% of range)",
+        }
+
+    # List price range (BE) — from SAM (brand_manager).
+    pr = meta.get("price")
+    if pr:
+        out["bm_price"] = {"value": pr["avg"], "display": f"€{pr['min']}–{pr['max']}",
+                           "detail": f"avg €{pr['avg']} across {tp} packs (SAM list price)"}
+    elif not is_medicine:
+        out["bm_price"] = {"value": None, "display": "n/a", "detail": "parapharmacy — free pricing"}
+    else:
+        out["bm_price"] = {"value": None, "display": "—", "detail": "no list price in SAM"}
+
+    # Evidence base (PubMed) — marketing + brand_manager
+    ev = {"value": pubmed, "display": f"{pubmed} papers", "detail": "PubMed publications naming the brand"}
+    out["mk_evidence_base"] = dict(ev)
+    out["bm_evidence_base"] = dict(ev)
+    # Clinical pipeline (trials) — brand_manager
+    out["bm_clinical_pipeline"] = {"value": trials, "display": f"{trials} trials",
+                                   "detail": "registered / active clinical trials"}
+    # Safety — EU-native (EudraVigilance) is primary in Belgium; FAERS is intl.
+    if not is_medicine:
+        na = {"value": None, "display": "n/a", "detail": "not a medicine — no pharmacovigilance"}
+        out["ph_eu_safety"] = dict(na)
+        out["ph_safety_signals"] = dict(na)
+    else:
+        bt = meta.get("black_triangle")
+        eu_detail = ("active substance under EMA / EudraVigilance ADR monitoring" if eudra > 0
+                     else "no EU adverse-reaction record for the substance")
+        if bt:
+            eu_detail = "▲ under additional EU safety monitoring (SAM black triangle) · " + eu_detail
+        out["ph_eu_safety"] = {
+            "value": eudra,
+            "display": "▲ Monitored (EU)" if bt else ("Monitored (EU)" if eudra > 0 else "No EU signal"),
+            "detail": eu_detail,
+        }
+        out["ph_safety_signals"] = {
+            "value": fda,
+            "display": "None found" if fda == 0 else f"{fda} reports",
+            "detail": "Belgium-occurring adverse-event reports (FAERS)" + (" — clean" if fda == 0 else ""),
+        }
+    # News & PR volume — marketing
+    out["mk_news_pr"] = {"value": news, "display": f"{news} articles",
+                         "detail": "press / news naming the brand"}
+    # Patient forum discussion — pharmacist
+    out["ph_patient_questions"] = {"value": forum, "display": f"{forum} threads",
+                                   "detail": "patient-forum threads naming the brand"}
+    # BCFI/CBIP clinical guidance notes (interactions / older-patient / safety) — pharmacist
+    if is_medicine:
+        out["ph_clinical_notes"] = {
+            "value": bcfi,
+            "display": f"{bcfi} clinical notes" if bcfi else "None",
+            "detail": "BCFI/CBIP commentary on the substance (interactions, geriatric, safety)"
+                      if bcfi else "no BCFI clinical notes for the substance",
+        }
+    else:
+        out["ph_clinical_notes"] = {"value": None, "display": "n/a", "detail": "not a medicine"}
+
+    # ── Adverse-reaction breakdown (openFDA structured metadata) — pharmacist ──
+    rx = db.execute(text("""
+        SELECT reaction, count(*) AS c FROM (
+            SELECT jsonb_array_elements_text(m.raw_metadata->'reactions') AS reaction
+            FROM mention_entities me JOIN mentions m ON m.id = me.mention_id
+            WHERE me.entity_type = 'brand' AND me.entity_id = :bid
+              AND m.source_type = 'openfda' AND m.raw_metadata ? 'reactions'
+        ) t GROUP BY reaction ORDER BY c DESC LIMIT 6
+    """), {"bid": bid}).mappings().all()
+    if not is_medicine:
+        out["ph_adverse_reactions"] = {"value": None, "display": "n/a", "detail": "not a medicine — no pharmacovigilance"}
+    elif fda > 0:
+        rx_peers = [{"name": r["reaction"].title(), "share": round(100 * int(r["c"]) / fda), "is_self": False} for r in rx]
+        out["ph_adverse_reactions"] = {
+            "value": fda, "display": f"{fda} reports",
+            "detail": "most-reported reactions (Belgium, FAERS)", "peers": rx_peers, "peers_label": "Top reactions",
+        }
+    else:
+        out["ph_adverse_reactions"] = {"value": 0, "display": "None found", "detail": "no FAERS reports — clean"}
+
+    # ── Trial & study mix (ClinicalTrials structured metadata) — brand_manager ─
+    # Phases (1–4) only exist for *drug* trials. Cosmetic/supplement brands run
+    # interventional non-drug efficacy studies or observational studies, which
+    # genuinely have no phase — so we classify those by study type instead of
+    # dumping them all into "Not applicable".
+    if trials > 0:
+        rows = db.execute(text("""
+            SELECT coalesce(nullif(m.raw_metadata->>'phase', ''), 'NA') AS phase,
+                   coalesce(m.raw_metadata->>'study_type', '') AS study_type,
+                   count(*) AS c
+            FROM mention_entities me JOIN mentions m ON m.id = me.mention_id
+            WHERE me.entity_type = 'brand' AND me.entity_id = :bid AND m.source_type = 'clinical_trials'
+            GROUP BY phase, study_type
+        """), {"bid": bid}).mappings().all()
+
+        def _phase_label(p):
+            raw = (p or "").strip().upper()
+            if raw in ("", "NA", "N/A", "PHASE NA", "NONE"):
+                return None  # no phase
+            parts = []
+            for tok in raw.replace("/", ",").split(","):
+                tok = tok.strip()
+                if tok in ("", "NA", "N A", "N"):
+                    continue
+                tok = tok.replace("EARLY_PHASE1", "Early Phase 1").replace("EARLY PHASE 1", "Early Phase 1")
+                tok = tok.replace("PHASE", "Phase ").replace("_", " ")
+                parts.append(" ".join(tok.split()))
+            return ", ".join(parts) if parts else None
+
+        def _label(phase, st):
+            pl = _phase_label(phase)
+            if pl:
+                return pl
+            st = (st or "").upper()
+            if st == "OBSERVATIONAL":
+                return "Observational"
+            if st == "INTERVENTIONAL":
+                return "Interventional (non-drug)"
+            return "Unspecified"
+
+        agg: Dict[str, int] = {}
+        for r in rows:
+            lbl = _label(r["phase"], r["study_type"])
+            agg[lbl] = agg.get(lbl, 0) + int(r["c"])
+        # Plain-language meaning for each phase so the mix is self-explanatory.
+        phase_tag = {
+            "Early Phase 1": "exploratory / first-in-human",
+            "Phase 1": "safety & dosing",
+            "Phase 2": "efficacy & side-effects",
+            "Phase 3": "large-scale confirmatory (pre-approval)",
+            "Phase 4": "post-marketing surveillance",
+            "Interventional (non-drug)": "device / cosmetic efficacy study",
+            "Observational": "real-world, no intervention",
+        }
+        mix = [{"name": lbl + (f" · {phase_tag[lbl]}" if lbl in phase_tag else ""),
+                "share": round(100 * c / trials), "is_self": False}
+               for lbl, c in sorted(agg.items(), key=lambda x: -x[1])]
+        # Headline: how many are actual phased drug trials.
+        phased = sum(c for lbl, c in agg.items() if lbl.startswith(("Phase", "Early")))
+        detail = (f"{phased} phased drug trial{'s' if phased != 1 else ''}"
+                  if phased else "no phased drug trials — efficacy / observational studies")
+        out["bm_trial_phases"] = {
+            "value": trials, "display": f"{trials} studies",
+            "detail": detail, "peers": mix, "peers_label": "Study mix",
+        }
+
+    linked = int(base["linked"] or 0)
+    rated = int(base["rated"] or 0)
+    avg_rating = round(float(base["avg_rating"] or 0), 2)
+    classified = int(base["classified"] or 0)
+    pos = int(base["pos"] or 0)
+    neg = int(base["neg"] or 0)
+
+    # Non-review public attention (news + social + forum) — the fallback signal
+    # for Rx products that have no consumer-review footprint.
+    attention = cmap.get("rss", 0) + cmap.get("news", 0) + cmap.get("forum", 0) + cmap.get("youtube", 0)
+
+    # Review rating & volume (marketing) / public demand signal (pharmacist)
+    if rated:
+        out["mk_review_trend"] = {"value": avg_rating,
+               "display": f"{avg_rating}★ · {_human(rated)} reviews",
+               "detail": "avg rating across linked pharmacy reviews", "count": rated}
+        out["ph_demand_signal"] = {"value": rated, "display": f"{_human(rated)} reviews",
+               "detail": "patient-review volume = what people are asking about", "count": rated}
+    elif attention:
+        # No consumer reviews (typical for Rx) → use news/social/forum attention.
+        out["mk_review_trend"] = {"value": None, "display": "No consumer reviews",
+               "detail": f"Rx product — {_human(attention)} news/social mentions instead (no review channel)"}
+        out["ph_demand_signal"] = {"value": attention, "display": f"{_human(attention)} mentions",
+               "detail": "news / social / forum attention (no consumer reviews — Rx)", "count": attention}
+
+    # Sentiment (marketing trend / pharmacist patient sentiment)
+    if classified:
+        pct_pos = round(100 * pos / classified)
+        sent = {"value": pct_pos,
+                "display": f"{pct_pos}% positive",
+                "detail": f"{_human(pos)} positive · {_human(neg)} negative of {_human(classified)}"}
+        out["mk_sentiment_trend"] = sent
+        out["ph_patient_sentiment"] = dict(sent)
+    elif is_medicine:
+        # Rx: no consumer reviews to derive sentiment from.
+        na = {"value": None, "display": "n/a",
+              "detail": "no consumer reviews (Rx) — gauge via safety, evidence & HCP channels instead"}
+        out["mk_sentiment_trend"] = dict(na)
+        out["ph_patient_sentiment"] = dict(na)
+
+    # Complaint rate (negative share) — pharmacist quality early-warning
+    if classified:
+        neg_pct = round(100 * neg / classified)
+        out["ph_complaint_rate"] = {
+            "value": neg_pct, "display": f"{neg_pct}%",
+            "detail": f"{_human(neg)} negative of {_human(classified)} reviews",
+        }
+
+    # ── Review momentum (last 90d vs prior 90d) — demand trend, marketing + BM ─
+    mom = db.execute(text("""
+        SELECT
+          count(*) FILTER (WHERE m.published_at >= now() - interval '90 days') AS recent,
+          count(*) FILTER (WHERE m.published_at >= now() - interval '180 days'
+                             AND m.published_at <  now() - interval '90 days') AS prior
+        FROM mention_entities me JOIN mentions m ON m.id = me.mention_id
+        WHERE me.entity_type = 'brand' AND me.entity_id = :bid
+          AND m.source_type IN ('farmaline', 'medimarket')
+    """), {"bid": bid}).mappings().first()
+    recent_n, prior_n = int(mom["recent"] or 0), int(mom["prior"] or 0)
+    if prior_n > 0:
+        pct = round(100 * (recent_n - prior_n) / prior_n)
+        arrow = "▲" if pct > 0 else "▼" if pct < 0 else "■"
+        rm = {"value": pct, "display": f"{arrow} {pct:+d}%",
+              "detail": f"{recent_n} reviews last 90d vs {prior_n} prior"}
+        out["mk_review_momentum"] = dict(rm)
+        out["bm_review_momentum"] = dict(rm)
+
+    # ── Regional split FR vs NL (bilingual Belgium) — public penetration proxy ─
+    reg = db.execute(text("""
+        SELECT m.language AS lang, count(*) AS n, coalesce(avg(m.rating), 0) AS avg_r
+        FROM mention_entities me JOIN mentions m ON m.id = me.mention_id
+        WHERE me.entity_type = 'brand' AND me.entity_id = :bid
+          AND m.source_type IN ('farmaline', 'medimarket')
+          AND m.language IN ('fr', 'nl')
+        GROUP BY m.language
+    """), {"bid": bid}).mappings().all()
+    rmap = {r["lang"]: (int(r["n"]), round(float(r["avg_r"]), 1)) for r in reg}
+    nl_n = rmap.get("nl", (0, 0))[0]
+    fr_n = rmap.get("fr", (0, 0))[0]
+    if nl_n + fr_n > 0:
+        nl_pct = round(100 * nl_n / (nl_n + fr_n))
+        out["bm_regional_split"] = {
+            "value": nl_pct,
+            "display": f"NL {nl_pct}% · FR {100 - nl_pct}%",
+            "detail": f"NL {_human(nl_n)} reviews @ {rmap.get('nl', (0,0))[1]}★ · "
+                      f"FR {_human(fr_n)} @ {rmap.get('fr', (0,0))[1]}★",
+        }
+
+    # ── Category Share of Voice (public side) — brand vs category peers ────────
+    # Framework brands use their fine-grained `category` family. The imported
+    # supplier brands have no family but DO share a 5-code `primary_category`, so
+    # they fall back to the data-bearing brands in that category — otherwise every
+    # new brand would be a degenerate "sole tracked brand".
+    from core.framework_catalog import category_family, PRIMARY_CATEGORIES
+    peer_rows, basis = None, None
+    if brand.category:
+        fam = category_family(brand.category)
+        rows = db.execute(text("""
+            SELECT b.id, b.name, b.category,
+                   (SELECT count(*) FROM mention_entities me
+                      WHERE me.entity_type = 'brand' AND me.entity_id = b.id) AS cnt
+            FROM brands b WHERE b.category IS NOT NULL
+        """)).mappings().all()
+        peer_rows = [r for r in rows if category_family(r["category"]) == fam]
+        basis = f"{fam} review voice"
+    elif brand.primary_category:
+        rows = db.execute(text("""
+            SELECT b.id, b.name,
+                   (SELECT count(*) FROM mention_entities me
+                      WHERE me.entity_type = 'brand' AND me.entity_id = b.id) AS cnt
+            FROM brands b
+            WHERE b.primary_category = :pc
+              AND EXISTS (SELECT 1 FROM mention_entities me
+                          WHERE me.entity_type = 'brand' AND me.entity_id = b.id)
+        """), {"pc": brand.primary_category}).mappings().all()
+        peer_rows = list(rows)
+        lbl = next((c["label_fr"] for c in PRIMARY_CATEGORIES if c["code"] == brand.primary_category),
+                   brand.primary_category)
+        basis = f"{brand.primary_category} · {lbl} review voice"
+    if peer_rows is not None:
+        total = sum(int(r["cnt"] or 0) for r in peer_rows)
+        my_cnt = next((int(r["cnt"] or 0) for r in peer_rows if r["id"] == bid), linked)
+        peer_count = len(peer_rows)
+        if peer_count <= 1 or total == 0:
+            sole = {"value": None, "display": "Sole tracked brand",
+                    "detail": f"only tracked brand with voice in {basis} — add peers for a real share"}
+            out["mk_share_of_voice"] = dict(sole)
+            out["bm_voice_share"] = dict(sole)
+        else:
+            sov = round(100 * my_cnt / total)
+            # Ranked peer table (name + share), most-talked-about first.
+            peers = sorted(
+                ({"name": r["name"], "share": round(100 * int(r["cnt"] or 0) / total),
+                  "is_self": r["id"] == bid} for r in peer_rows),
+                key=lambda p: p["share"], reverse=True,
+            )
+            rank = next((i + 1 for i, p in enumerate(peers) if p["is_self"]), peer_count)
+            # Show the top peers but always include self so the user sees their slot.
+            display = peers[:8]
+            if not any(p["is_self"] for p in display):
+                self_p = next((p for p in peers if p["is_self"]), None)
+                if self_p:
+                    display = peers[:7] + [self_p]
+            sov_card = {"value": sov,
+                        "display": f"{sov}%",
+                        "detail": f"of {basis} · #{rank} of {peer_count}",
+                        "peers": display,
+                        "peers_label": "Category mix",
+                        "rank": rank,
+                        "peer_count": peer_count}
+            out["mk_share_of_voice"] = sov_card
+            out["bm_voice_share"] = dict(sov_card)
+
+    # ── Demand momentum (engine; may be sparse) ──────────────────────────────
+    # Use the SAME 90-day window as the Brand Pulse "Demand momentum" panel
+    # (search_intelligence._MOM_PERIOD) so the number can never diverge between
+    # the panel and the "What this means" insight — one metric, one value.
+    try:
+        from intelligence.momentum import compute_momentum
+        h = _headline(compute_momentum(db, "brand", bid, period="90d"))
+        if h and (h.get("sample_size") or 0) > 0 and h.get("value") is not None:
+            val = round(float(h["value"]))
+            trend = "rising" if val >= 60 else "cooling" if val < 40 else "stable"
+            out["mk_search_momentum"] = {
+                "value": val, "display": f"{val}/100",
+                "detail": h.get("label") or "mention-volume momentum",
+            }
+            out["mk_pivot_alert"] = {
+                "value": val,
+                "display": trend.capitalize(),
+                "detail": f"weak-signal momentum {val}/100 — {trend}",
+            }
+    except Exception:
+        pass
+
+    # ── Launch readiness (brand_manager; partial — public legs only) ─────────
+    try:
+        from intelligence.launch_readiness import compute_launch_readiness
+        h = _headline(compute_launch_readiness(db, bid))
+        if h and (h.get("sample_size") or 0) > 0 and h.get("value") is not None:
+            val = round(float(h["value"]))
+            out["bm_launch_readiness"] = {
+                "value": val, "display": f"{val}/100",
+                "detail": h.get("label") or "composite (public legs only)",
+            }
+    except Exception:
+        pass
+
+    # ── Decision-shaped KPIs (action cues per role) ─────────────────────────
+    rt2 = retail_meta(brand.name)
+    stock = rt2.get("in_stock_pct")
+
+    # Pharmacist · Availability risk → order ahead / substitute
+    if stock is not None:
+        lvl = "High" if stock < 20 else "Medium" if stock < 50 else "Low"
+        cue = ("order ahead / propose a substitute" if lvl == "High"
+               else "keep an eye on stock" if lvl == "Medium" else "readily available")
+        out["ph_availability_risk"] = {"value": 100 - stock, "display": f"{lvl} risk",
+                                       "detail": f"{stock}% of SKUs in stock online — {cue}"}
+
+    # Pharmacist · Substitution options → who to recommend instead (same family)
+    if brand.category:
+        from core.framework_catalog import category_family
+        fam = category_family(brand.category)
+        all_peers = db.execute(text(
+            "SELECT name, category FROM brands WHERE id <> :bid AND category IS NOT NULL"),
+            {"bid": bid}).mappings().all()
+        peers = [r["name"] for r in all_peers if category_family(r["category"]) == fam]
+        in_stock = [p for p in peers if (retail_meta(p).get("in_stock_pct") or 0) >= 10]
+        shown = in_stock or peers  # medicines aren't in the retail catalogue → list tracked alternatives
+        suffix = " in stock" if in_stock else ""
+        out["ph_substitution"] = {
+            "value": len(shown),
+            "display": f"{len(shown)} alternative" + ("" if len(shown) == 1 else "s") + suffix,
+            "detail": (f"in {brand.category}: " + ", ".join(shown[:4])) if shown
+                      else "no same-category alternatives tracked",
+        }
+
+    # Pharmacist · Patient out-of-pocket → flag cost
+    price = (meta.get("price") or {}).get("avg") or (rt2.get("price") or {}).get("avg")
+    if is_medicine and price:
+        if (meta.get("reimbursed_packs") or 0) > 0:
+            cp = (meta.get("reimbursement") or {}).get("copay")
+            cat = "/".join((meta.get("reimbursement") or {}).get("categories") or [])
+            out["ph_out_of_pocket"] = {"value": cp, "display": f"~€{cp} co-pay" if cp else "Reimbursed",
+                                       "detail": f"RIZIV-reimbursed{(' cat ' + cat) if cat else ''} — low patient cost"}
+        else:
+            out["ph_out_of_pocket"] = {"value": price, "display": f"~€{price} (full price)",
+                                       "detail": "not reimbursed — patient pays full price; suggest cheaper equivalents if cost-sensitive"}
+    elif price:
+        out["ph_out_of_pocket"] = {"value": price, "display": f"~€{price}",
+                                   "detail": "parapharmacy — full retail price"}
+
+    # Pharmacist · Safety watch → warn / counsel / clear
+    if is_medicine:
+        flags = []
+        if meta.get("black_triangle"):
+            flags.append("▲ additional EU monitoring")
+        if fda > 0:
+            flags.append(f"{fda} AE reports (BE)")
+        if bcfi > 0:
+            flags.append(f"{bcfi} BCFI notes")
+        level = "Watch" if (meta.get("black_triangle") or fda >= 5) else "Monitor" if flags else "Clear"
+        out["ph_safety_watch"] = {"value": level, "display": level,
+                                  "detail": "; ".join(flags) if flags else "no active safety signals"}
+    else:
+        out["ph_safety_watch"] = {"value": None, "display": "n/a", "detail": "not a medicine"}
+
+    # Brand manager · Distribution breadth → where it's leaking
+    skus = rt2.get("skus") or 0
+    packs = len(meta.get("cnk") or [])
+    if skus or packs:
+        base = max(skus, packs)
+        unit = "retail SKUs" if skus >= packs else "SAM packs"
+        breadth = "Broad" if base >= 50 else "Moderate" if base >= 15 else "Narrow"
+        out["bm_distribution_breadth"] = {
+            "value": base, "display": f"{breadth} · {base} {unit}",
+            "detail": f"{packs} SAM packs · {skus} retail SKUs"
+                      + (f" · {stock}% in stock" if stock is not None else ""),
+        }
+
+    # Brand manager · Promo pressure → match or hold
+    if rt2.get("skus"):
+        promo = rt2.get("promo_pct", 0)
+        disc = rt2.get("avg_discount", 0)
+        lvl = "High" if promo >= 40 else "Moderate" if promo >= 15 else "Low"
+        out["bm_promo_pressure"] = {
+            "value": promo, "display": f"{lvl} · {promo}% on promo",
+            "detail": f"{promo}% of SKUs discounted, avg {disc}% off — "
+                      + ("match or hold the line" if lvl == "High" else "pricing headroom"),
+        }
+
+    # Marketing · Claim consistency (claims vs evidence) → substantiate or soften
+    benefits = rt2.get("benefits") or []
+    if benefits:
+        ev = pubmed + bcfi
+        if ev >= 10:
+            score, msg = 85, "well-substantiated by literature / clinical guidance"
+        elif ev >= 3:
+            score, msg = 60, "partially substantiated — strengthen the weaker claims"
+        else:
+            score, msg = 30, "claims outpace published evidence — substantiate or soften before a regulator/competitor does"
+        out["mk_claims_consistency"] = {
+            "value": score, "display": f"{score}/100",
+            "detail": f"{len(benefits)} claim themes vs {ev} evidence items ({pubmed} papers, {bcfi} BCFI) — {msg}",
+        }
+
+    # ── NUT · Health-claim substantiation (EU Register of Health Claims) ───────
+    # Supplements aren't medicines (no SAM/ATC), so the EU claims register is the
+    # authoritative positioning/compliance signal. Substances are derived from the
+    # brand's review/retail text (a proxy — honest about it in the detail copy).
+    try:
+        from intelligence.health_claims import substantiation_for_brand
+        hc = substantiation_for_brand(db, brand)
+        if hc:
+            out["nut_claim_substantiation"] = hc
+    except Exception:
+        pass
+
+    # ── OTC (cosmetic) · EU Safety Gate recall watch ──────────────────────────
+    # Safety Gate (RAPEX) covers cosmetics/personal-care recalls (not medicines or
+    # devices). For reputable pharmacy brands this is usually clean — which is
+    # itself a reassurance signal — and flags the rare brand with an EU alert.
+    out["otc_safety_gate"] = {
+        "value": safety_gate,
+        "display": "No EU recalls on record" if safety_gate == 0 else f"{safety_gate} recall alert(s)",
+        "detail": ("no EU Safety Gate (RAPEX) cosmetic alerts naming this brand — clean"
+                   if safety_gate == 0
+                   else "EU Safety Gate (RAPEX) cosmetic safety alerts naming this brand"),
+    }
+
+    # ── Pharmacist · Belgian shortage watch — Belgium-first, from SAM supply data ──
+    # The authoritative Belgian availability signal is SAM's own SupplyProblem /
+    # LimitedAvailability / end-of-commercialisation data (dated, with reason &
+    # expected-return), which we extract directly — far richer than the empty FAGG
+    # news-page scrape. FAGG mention count is kept as a fallback.
+    if is_medicine:
+        sup = meta.get("supply") or {}
+        active = sup.get("active_problems", 0)
+        if active:
+            end, reason = sup.get("expected_end"), sup.get("reason")
+            out["ph_be_shortage"] = {
+                "value": active,
+                "display": f"Supply problem (BE) · {active} pack{'s' if active != 1 else ''}",
+                "detail": "active SAM/FAGG supply problem"
+                          + (f" — {reason}" if reason else "")
+                          + (f"; expected back {end}" if end else ""),
+            }
+        elif sup.get("end_of_commercialisation") == "temporary":
+            out["ph_be_shortage"] = {"value": 1, "display": "Temporary withdrawal (BE)",
+                                     "detail": "temporarily out of commercialisation (SAM)"}
+        elif sup.get("limited_availability"):
+            out["ph_be_shortage"] = {"value": 1, "display": "Limited availability (BE)",
+                                     "detail": "limited availability flagged in SAM"}
+        elif fagg_short:
+            out["ph_be_shortage"] = {"value": fagg_short,
+                                     "display": f"{fagg_short} BE shortage notice(s)",
+                                     "detail": "Belgian FAGG/AFMPS shortage register"}
+        else:
+            out["ph_be_shortage"] = {"value": 0, "display": "No BE supply issue",
+                                     "detail": "no active supply problem in SAM/FAGG"}
+        # French ANSM list — the cross-border complement for the FR-speaking market.
+        out["ph_fr_availability"] = {
+            "value": ansm_short,
+            "display": "No FR shortage listed" if ansm_short == 0 else f"{ansm_short} FR shortage notice(s)",
+            "detail": ("not on the French ANSM shortage/availability list"
+                       if ansm_short == 0
+                       else "listed on the French ANSM medicine shortage/availability register (substance match)"),
+        }
+
+    # ── Manufacturer / MAH + SAM-registered portfolio (B2B / supplier brands) ──
+    # SAM gives the marketing-authorisation holder / producer and the company's
+    # registered range — the core signal for the supplier brands (PEC/PAC/NUT)
+    # that have no consumer footprint, matched via the SAM Company/Producer name.
+    company = meta.get("company")
+    if company:
+        out["bm_manufacturer"] = {
+            "value": company, "display": company,
+            "detail": "marketing-authorisation holder / producer (Belgian SAM/FAGG)",
+        }
+    pf = meta.get("sam_portfolio")
+    if pf and (pf.get("medicines") or pf.get("parapharmacy")):
+        tot = pf["medicines"] + pf["parapharmacy"]
+        bits = []
+        if pf["medicines"]:
+            bits.append(f"{pf['medicines']} registered medicines")
+        if pf["parapharmacy"]:
+            bits.append(f"{pf['parapharmacy']} parapharmacy SKUs")
+        atc = pf.get("atc_classes") or []
+        sup_n = pf.get("supply_problems") or 0
+        out["bm_sam_portfolio"] = {
+            "value": tot, "display": f"{_human(tot)} SAM-registered products",
+            "detail": "Belgian SAM/FAGG range: " + ", ".join(bits)
+                      + (f" · {len(atc)} ATC class{'es' if len(atc) != 1 else ''}" if atc else "")
+                      + (f" · {sup_n} with active BE supply problems" if sup_n else ""),
+        }
+
+    return out
+
+
+# ATC (anatomical-therapeutic) → the Belgian prescriber specialty that drives it.
+# Longest-prefix match. Used to make HCP targeting brand-specific from SAM's ATC.
+_ATC_SPECIALTY = {
+    "N03": "Neurologists (epilepsy)", "N04": "Neurologists", "N05": "Psychiatrists",
+    "N06": "Psychiatrists / Neurologists", "N02": "GPs / Pain specialists",
+    "M01": "Rheumatologists / GPs", "M05": "Rheumatologists", "M04": "GPs / Rheumatologists",
+    "A02": "Gastroenterologists / GPs", "A07": "Gastroenterologists / GPs",
+    "A10": "Endocrinologists (diabetes)", "A11": "GPs",
+    "R03": "Pulmonologists", "R06": "Allergologists / GPs", "R02": "ENT / GPs", "R01": "ENT specialists",
+    "L04": "Immunologists / Dermatologists / Rheumatologists", "L01": "Oncologists",
+    "C": "Cardiologists", "D": "Dermatologists", "G": "Gynaecologists / Urologists",
+    "S": "Ophthalmologists / ENT", "J": "Infectiologists / GPs", "B": "Haematologists",
+}
+
+
+def hcp_target(brand, meta: dict) -> Optional[dict]:
+    """Brand-specific prescriber target derived from the SAM ATC code."""
+    atc = (meta.get("atc") or [])
+    if not atc:
+        return None
+    code = atc[0]["code"]
+    spec = None
+    for k in sorted(_ATC_SPECIALTY, key=len, reverse=True):
+        if code.startswith(k):
+            spec = _ATC_SPECIALTY[k]
+            break
+    substance = (meta.get("primary") or [None])[0]
+    return {"specialty": spec or "Specialist prescribers", "atc": code,
+            "atc_desc": atc[0].get("desc"), "substance": substance}
+
+
+def _ordinal(n: int) -> str:
+    return f"{n}{'th' if 11 <= n % 100 <= 13 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
+
+
+def compute_insights(brand: Brand, live: Dict[str, dict], role: str) -> List[str]:
+    """Plain-language "what this means" bullets derived from the live KPI values.
+
+    Turns the raw numbers into the read a human would give them — leader vs
+    laggard, where the growth lever is, and what's still blocked on a feed — so
+    the dashboard interprets itself instead of leaving the user to.
+    """
+    out: List[str] = []
+
+    sov = live.get("mk_share_of_voice") or live.get("bm_voice_share")
+    if sov and sov.get("peers"):
+        rank, n, share = sov["rank"], sov["peer_count"], sov["value"]
+        leader = sov["peers"][0]
+        if rank == 1:
+            runner = sov["peers"][1] if len(sov["peers"]) > 1 else None
+            tail = f" — {share - runner['share']} pts ahead of {runner['name']}." if runner else "."
+            out.append(f"{brand.name} leads {brand.category} with {share}% of review voice ({n} brands tracked){tail}")
+        else:
+            out.append(
+                f"{brand.name} holds {share}% of {brand.category} review voice — {_ordinal(rank)} of {n}; "
+                f"{leader['name']} leads at {leader['share']}%. Closing that gap is the share-growth target."
+            )
+
+    sent = live.get("mk_sentiment_trend") or live.get("ph_patient_sentiment")
+    if sent:
+        p = sent["value"]
+        if p >= 90:
+            out.append(f"Sentiment is overwhelmingly positive ({p}%) — perception is a strength, so reach and availability are the growth levers, not the message.")
+        elif p >= 75:
+            out.append(f"Sentiment is solidly positive ({p}%); protect it as you scale spend.")
+        else:
+            out.append(f"Sentiment is only {p}% positive — investigate the negative drivers before pushing more spend.")
+
+    rev = live.get("mk_review_trend") or live.get("ph_demand_signal")
+    if rev and rev.get("count"):
+        c = rev["count"]
+        base = "a large, reliable base" if c >= 1000 else "a modest base — read trends with some caution" if c >= 100 else "a thin base — treat as directional only"
+        out.append(f"{_human(c)} reviews analysed: {base}.")
+
+    # NOTE: Demand-momentum and Launch-readiness are NOT restated here — they are
+    # already shown (with value + verdict) in the Brand Pulse "Launch & Demand"
+    # panel directly above this section. Echoing them in "What this means" made the
+    # same metric appear twice on the page, so the interpretation is kept to signals
+    # the panels DON'T already display (share-of-voice rank, sentiment, review base).
+
+    # The honest gap: roles whose core KPIs are proprietary still run on proxies.
+    if role in ("brand_manager", "pharmacist"):
+        out.append("Sales / sell-out KPIs are still on public proxies. Connecting a sell-out feed turns voice share into true market share and unlocks the locked cards above.")
+
+    return out[:5]

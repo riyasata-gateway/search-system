@@ -32,14 +32,20 @@ from sqlalchemy.orm import Session
 from core.config import settings
 from core.framework_catalog import BRAND_INN
 from intelligence.inn_resolver import resolve_inn
+from ingestion.connectors.ansm import ANSMConnector
 from ingestion.connectors.app_store import AppStoreReviewsConnector
 from ingestion.connectors.bcfi import BCFIConnector
+from ingestion.connectors.belgium_health_data import BelgiumHealthDataConnector
 from ingestion.connectors.clinical_trials import ClinicalTrialsConnector
+from ingestion.connectors.doctissimo import DoctissimoConnector
 from ingestion.connectors.eudravigilance import EudraVigilanceConnector
 from ingestion.connectors.forum_scraper import ForumScraperConnector
+from ingestion.connectors.google_trends import GoogleTrendsConnector
 from ingestion.connectors.openfda import OpenFDAConnector
 from ingestion.connectors.pubmed import PubMedConnector
+from ingestion.connectors.reddit import RedditConnector
 from ingestion.connectors.rss_news import RSSNewsConnector
+from ingestion.connectors.safety_gate import SafetyGateConnector
 from ingestion.connectors.wikipedia import WikipediaConnector
 from ingestion.connectors.youtube import YouTubeConnector
 from ingestion.deduplication import compute_text_hash, is_text_too_short, sanitise_text
@@ -55,8 +61,9 @@ LANGUAGES = ["fr", "nl", "en"]
 # not trade name. Skip brands that aren't medicines (no INN → no signal).
 SUBSTANCE_SOURCES = {"openfda", "eudravigilance"}
 # Scientific / clinical sources: keyed by the *molecule* for drugs (e.g.
-# "levetiracetam", not "Keppra"), and by the brand for cosmetics.
-SCIENTIFIC_SOURCES = {"pubmed", "clinical_trials", "bcfi"}
+# "levetiracetam", not "Keppra"), and by the brand for cosmetics. The ANSM (FR)
+# and FAGG/Belgium shortage lists are indexed by molecule too, so they join here.
+SCIENTIFIC_SOURCES = {"pubmed", "clinical_trials", "bcfi", "ansm", "belgium_health"}
 
 
 def _brand_terms(name: str):
@@ -82,6 +89,13 @@ CONNECTORS = {
     "app_store": AppStoreReviewsConnector,
     "eudravigilance": EudraVigilanceConnector,
     "bcfi": BCFIConnector,
+    "google_trends": GoogleTrendsConnector,
+    "reddit": RedditConnector,
+    "ansm": ANSMConnector,
+    "doctissimo": DoctissimoConnector,
+    "safety_gate": SafetyGateConnector,
+    # Belgium-native: FAGG/AFMPS shortages + BCFI/CBIP guidance + data.gov.be.
+    "belgium_health": BelgiumHealthDataConnector,
 }
 
 
@@ -94,6 +108,8 @@ def main():
     ap.add_argument("--limit", type=int, default=30, help="max mentions kept per brand × source")
     ap.add_argument("--sources", default="pubmed,clinical_trials,openfda,rss")
     ap.add_argument("--only", default=None, help="comma-separated brand names to limit to (testing)")
+    ap.add_argument("--all-brands", action="store_true",
+                    help="ingest for EVERY catalogue brand (default: only the 31 workbook brands)")
     args = ap.parse_args()
 
     sources = [s.strip() for s in args.sources.split(",") if s.strip() in CONNECTORS]
@@ -101,7 +117,11 @@ def main():
 
     engine = create_engine(settings.DATABASE_SYNC_URL)
     with Session(engine) as db:
-        q = select(Brand).where(Brand.category.isnot(None)).order_by(Brand.name)
+        q = select(Brand).order_by(Brand.name)
+        if not args.all_brands:
+            # Default stays framework-only; --all-brands opens it to the full
+            # supplier catalogue (idempotent + resumable, so safe to re-run).
+            q = q.where(Brand.category.isnot(None))
         brands = db.execute(q).scalars().all()
         if args.only:
             wanted = {n.strip().lower() for n in args.only.split(",")}

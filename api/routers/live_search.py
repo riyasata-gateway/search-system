@@ -361,20 +361,6 @@ async def _run_app_store(keywords: List[str], countries: List[str], languages: L
         return []
 
 
-async def _run_trustpilot(keywords: List[str], countries: List[str], languages: List[str]):
-    try:
-        from ingestion.connectors.trustpilot import TrustpilotConnector
-        c = TrustpilotConnector()
-        if not c.is_available():
-            return []
-        return await asyncio.wait_for(
-            c.collect(keywords, countries, languages),
-            timeout=12.0,
-        )
-    except Exception:
-        return []
-
-
 _PERIOD_DAYS = {"7d": 7, "30d": 30, "180d": 180, "365d": 365}
 
 
@@ -515,7 +501,6 @@ _SOURCE_RUNNERS = {
     "openfda": _run_openfda,
     "eudravigilance": _run_eudravigilance,
     "app_store": _run_app_store,
-    "trustpilot": _run_trustpilot,
     "doctissimo": _run_doctissimo,
     "belgium_health": _run_belgium_health,
     "belgium_hcp": _run_belgium_hcp,
@@ -539,8 +524,6 @@ def _missing_key_reason(source: str) -> Optional[str]:
         return "YOUTUBE_API_KEY is not configured in .env"
     if source == "reddit" and not (settings.REDDIT_CLIENT_ID and settings.REDDIT_CLIENT_SECRET):
         return "REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET are not configured in .env"
-    if source == "trustpilot" and not settings.TRUSTPILOT_API_KEY:
-        return "TRUSTPILOT_API_KEY is not configured in .env"
     return None
 
 
@@ -549,7 +532,7 @@ def _missing_key_reason(source: str) -> Optional[str]:
 async def live_search(
     background_tasks: BackgroundTasks,
     q: str = Query(..., min_length=2, description="Brand, drug, or keyword to search live"),
-    sources: Optional[str] = Query(None, description="Comma-separated: news,rss,forum,google_trends,reddit,wikipedia,pubmed,youtube,clinical_trials,openfda,app_store,trustpilot"),
+    sources: Optional[str] = Query(None, description="Comma-separated: news,rss,forum,google_trends,reddit,wikipedia,pubmed,youtube,clinical_trials,openfda,app_store,safety_gate"),
     languages: Optional[str] = Query("fr,nl,de,en", description="Comma-separated language codes (BE: fr,nl,de + FR: fr; en for fallback)"),
     period: str = Query("all", description="Time window: 7d, 30d, 180d, 365d, all"),
     role: Optional[str] = Query(None, description="Role lens: pharmacist, marketing, brand_manager, admin (admins may view-as any; others locked to own role)"),

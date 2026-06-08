@@ -1,25 +1,32 @@
-"""ANSM connector — France medicine shortages + safety alerts.
+"""ANSM connector — France medicine shortages / availability.
 
 ANSM (Agence nationale de sécurité du médicament et des produits de santé) is the
-French medicines authority. It publishes:
-  - **Ruptures de stock** — the official list of medicines in / at risk of shortage
-    (the single highest-signal source for the pharmacist `availability` topic in FR).
-  - **Informations de sécurité** — safety alerts / DHPC-style communications.
+French medicines authority. Its "disponibilités des produits de santé" page is the
+official list of medicines in / at risk of shortage — the highest-signal source for
+the pharmacist `availability` topic in the FR-speaking market. It's the France
+counterpart to the Belgian FAGG/AFMPS shortage feed in `belgium_health_data.py`.
 
-This is the France counterpart to the Belgian FAGG/AFMPS shortage feed in
-`belgium_health_data.py`. Both feed the pharmacist lens (shortages + safety first).
+How the source actually works (verified against the live site):
+  • https://ansm.sante.fr/disponibilites-des-produits-de-sante/medicaments
+    server-renders the COMPLETE current availability list as a single HTML
+    `<table>` (~270 rows). There is no pagination and no JSON/REST export.
+  • The page's `?search_api_fulltext=` box is **client-side only** — the server
+    ignores it and always returns the full list. So we fetch the whole table ONCE,
+    cache it for the run, and filter by drug / molecule name in Python.
 
-Public, no-auth surfaces only. The connector is resilient: any non-200, network
-error, or selector miss degrades to an empty list rather than raising — the live
-search treats `[]` as "no matches" and the rest of the sources still return.
+Each row carries: status (Rupture de stock / Tension d'approvisionnement / Remise à
+disposition / Arrêt de commercialisation), last-update date, the specialty name with
+its active substance(s) in trailing `[...]`, expected resupply date, and the medical
+domain. We match a brand by its trade name OR (better) its INN, because the list is
+substance-led — that's why the batch passes ANSM the molecule for medicines.
 
-NOTE: ANSM runs a Drupal site whose markup shifts periodically; the CSS selectors
-below may need re-tuning against the live DOM (same maintenance posture as the
-Belgian connector). Endpoints are documented inline so that's a quick fix.
+Resilient: any non-200, network error, or selector miss degrades to an empty list
+rather than raising — the live search treats `[]` as "no matches".
 """
-import asyncio
+import re
+import unicodedata
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Optional
 
 import httpx
 from bs4 import BeautifulSoup
@@ -29,6 +36,7 @@ from ingestion.connectors.base import BaseConnector, RawMention
 
 logger = get_logger(__name__)
 
+ANSM_URL = "https://ansm.sante.fr/disponibilites-des-produits-de-sante/medicaments"
 HEADERS = {
     "User-Agent": (
         "PharmaWatch/1.0 (+https://pharmawatch.eu/bot; "
@@ -37,21 +45,36 @@ HEADERS = {
     "Accept-Language": "fr-FR,fr;q=0.9",
 }
 
-# ANSM full-text search over the "disponibilité des produits de santé" section —
-# returns shortage / availability pages for a given molecule or brand.
-ANSM_SHORTAGE_SEARCH = (
-    "https://ansm.sante.fr/disponibilites-des-produits-de-sante/medicaments"
-    "?search_api_fulltext={kw}"
-)
-# ANSM site-wide search — surfaces safety information / news for the keyword.
-ANSM_SAFETY_SEARCH = "https://ansm.sante.fr/search?search_api_fulltext={kw}"
+
+def _norm(s: str) -> str:
+    """Accent- and case-insensitive key for matching ('paracétamol' → 'paracetamol')."""
+    return "".join(
+        c for c in unicodedata.normalize("NFD", s or "")
+        if unicodedata.category(c) != "Mn"
+    ).lower()
+
+
+def _parse_date(text: str) -> Optional[datetime]:
+    m = re.search(r"(\d{2})/(\d{2})/(\d{4})", text or "")
+    if not m:
+        return None
+    d, mo, y = (int(x) for x in m.groups())
+    try:
+        return datetime(y, mo, d, tzinfo=timezone.utc)
+    except ValueError:
+        return None
 
 
 class ANSMConnector(BaseConnector):
-    source_type = "ansm"
+    source_type = "ansm_shortage"
+
+    def __init__(self):
+        # Cache the full list for the lifetime of the connector instance so a
+        # batch over thousands of brands fetches the page once, not once per brand.
+        self._records: Optional[List[dict]] = None
 
     def is_available(self) -> bool:
-        return True  # public surfaces, no key
+        return True  # public surface, no key
 
     async def collect(
         self,
@@ -65,97 +88,98 @@ class ANSMConnector(BaseConnector):
         if countries and not ({"FR", "BE"} & set(countries)):
             return []
 
-        mentions: List[RawMention] = []
-        async with httpx.AsyncClient(headers=HEADERS, timeout=12.0,
-                                     follow_redirects=True) as client:
-            for keyword in keywords:
-                shortages, safety = await asyncio.gather(
-                    self._fetch_shortages(client, keyword),
-                    self._fetch_safety(client, keyword),
-                    return_exceptions=True,
-                )
-                for batch in (shortages, safety):
-                    if isinstance(batch, list):
-                        mentions.extend(batch)
+        records = await self._get_records()
+        if not records:
+            return []
 
-        logger.info("ansm_collected", count=len(mentions))
-        return mentions
+        norm_kws = [_norm(k) for k in keywords if _norm(k)]
+        if not norm_kws:
+            return []
 
-    async def _fetch_shortages(self, client: httpx.AsyncClient,
-                               keyword: str) -> List[RawMention]:
-        """Official French shortage / availability listing, filtered by keyword.
-        Highest-signal France source for the pharmacist `availability` topic."""
         out: List[RawMention] = []
-        try:
-            resp = await client.get(ANSM_SHORTAGE_SEARCH.format(kw=keyword))
-            if resp.status_code != 200:
-                return []
-            soup = BeautifulSoup(resp.text, "html.parser")
-            # Drupal teaser cards / result rows.
-            cards = soup.select(
-                "article, .node--view-mode-teaser, .search-result, .views-row, li.item"
-            )
-            kw_l = keyword.lower()
-            for card in cards:
-                title_el = card.select_one("h2, h3, .title, a")
-                if not title_el:
-                    continue
-                title = title_el.get_text(" ", strip=True)
-                body_el = card.select_one("p, .field--type-text-long, .teaser, .summary")
-                body = body_el.get_text(" ", strip=True) if body_el else ""
-                text = (title + (". " + body if body else "")).strip()
-                if len(text) < 25 or kw_l not in text.lower():
-                    continue
-                href = title_el.get("href", "") if title_el.has_attr("href") else ""
-                if href and not href.startswith("http"):
-                    href = "https://ansm.sante.fr" + href
-                out.append(RawMention(
-                    source_type="ansm_shortage",
-                    source_url=href or ANSM_SHORTAGE_SEARCH.format(kw=keyword),
-                    country="FR",
-                    language="fr",
-                    published_at=datetime.now(timezone.utc),
-                    raw_text=text[:1500],
-                    query_used=keyword,
-                    metadata={"register": "ANSM", "signal": "shortage"},
-                ))
-                if len(out) >= 10:
-                    break
-        except Exception as exc:
-            logger.warning("ansm_shortage_failed", kw=keyword, error=str(exc))
+        seen_ids: set = set()
+        for rec in records:
+            hay = rec["_norm"]
+            if not any(kw in hay for kw in norm_kws):
+                continue
+            rid = rec.get("id") or rec["product"]
+            if rid in seen_ids:
+                continue
+            seen_ids.add(rid)
+            substances = ", ".join(rec["substances"]) if rec["substances"] else ""
+            body = f"{rec['status']} — {rec['product']}"
+            if rec["medical_domain"]:
+                body += f" · {rec['medical_domain']}"
+            if rec["resupply"]:
+                body += f" · remise à disposition prévue {rec['resupply']}"
+            out.append(RawMention(
+                source_type=self.source_type,
+                source_url=rec.get("detail_url") or ANSM_URL,
+                country="FR",
+                language="fr",
+                published_at=rec.get("updated_dt") or datetime.now(timezone.utc),
+                raw_text=body[:1500],
+                query_used=keywords[0] if keywords else "",
+                metadata={
+                    "register": "ANSM",
+                    "signal": "shortage",
+                    "status": rec["status"],
+                    "substances": rec["substances"],
+                    "medical_domain": rec["medical_domain"],
+                },
+            ))
+            if len(out) >= 10:
+                break
+
+        logger.info("ansm_collected", count=len(out), keywords=keywords[:3])
         return out
 
-    async def _fetch_safety(self, client: httpx.AsyncClient,
-                            keyword: str) -> List[RawMention]:
-        """ANSM safety information / news matching the keyword (DHPC, recalls,
-        risk communications). Feeds the side-effect / risk angle."""
-        out: List[RawMention] = []
+    async def _get_records(self) -> List[dict]:
+        if self._records is not None:
+            return self._records
+        self._records = []
         try:
-            resp = await client.get(ANSM_SAFETY_SEARCH.format(kw=keyword))
+            async with httpx.AsyncClient(headers=HEADERS, timeout=30.0,
+                                         follow_redirects=True) as client:
+                resp = await client.get(ANSM_URL)
             if resp.status_code != 200:
-                return []
-            soup = BeautifulSoup(resp.text, "html.parser")
-            kw_l = keyword.lower()
-            for card in soup.select("article, .search-result, .views-row")[:8]:
-                title_el = card.select_one("h2, h3, .title, a")
-                if not title_el:
-                    continue
-                text = title_el.get_text(" ", strip=True)
-                if len(text) < 20 or kw_l not in text.lower():
-                    continue
-                href = title_el.get("href", "") if title_el.has_attr("href") else ""
-                if href and not href.startswith("http"):
-                    href = "https://ansm.sante.fr" + href
-                out.append(RawMention(
-                    source_type="ansm_safety",
-                    source_url=href or ANSM_SAFETY_SEARCH.format(kw=keyword),
-                    country="FR",
-                    language="fr",
-                    published_at=datetime.now(timezone.utc),
-                    raw_text=text[:1500],
-                    query_used=keyword,
-                    metadata={"register": "ANSM", "signal": "safety"},
-                ))
-        except Exception as exc:
-            logger.warning("ansm_safety_failed", kw=keyword, error=str(exc))
+                logger.warning("ansm_fetch_failed", status=resp.status_code)
+                return self._records
+            self._records = self._parse(resp.text)
+            logger.info("ansm_list_loaded", rows=len(self._records))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ansm_fetch_error", error=str(exc))
+        return self._records
+
+    @staticmethod
+    def _parse(html: str) -> List[dict]:
+        soup = BeautifulSoup(html, "html.parser")
+        out: List[dict] = []
+        for tr in soup.select("table tbody tr"):
+            tds = tr.find_all(["td", "th"])
+            if len(tds) < 5:
+                continue
+            spec = tds[2].get_text(" ", strip=True)
+            m = re.search(r"\[(.*?)\]\s*$", spec)
+            substances = (
+                [s.strip() for s in re.split(r",|;", m.group(1)) if s.strip()]
+                if m else []
+            )
+            status = tds[0].get_text(" ", strip=True)
+            updated = tds[1].get_text(" ", strip=True)
+            domain = tds[4].get_text(" ", strip=True)
+            href = tr.get("data-href")
+            rec = {
+                "id": tr.get("data-id"),
+                "status": status,
+                "updated": updated,
+                "updated_dt": _parse_date(updated),
+                "product": spec,
+                "substances": substances,
+                "resupply": tds[3].get_text(" ", strip=True) or None,
+                "medical_domain": domain,
+                "detail_url": ("https://ansm.sante.fr" + href) if href else None,
+            }
+            rec["_norm"] = _norm(spec + " " + " ".join(substances))
+            out.append(rec)
         return out

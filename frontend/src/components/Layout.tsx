@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import clsx from "clsx";
 import { LOCALES, useI18n, type Locale } from "../i18n";
+import { themeFor, roleCssVars } from "../lib/roleTheme";
 
 const LIVE_STATUS_STYLE: Record<string, string> = {
   open: "bg-emerald-500/10 text-emerald-300 border-emerald-400/30",
@@ -75,26 +76,37 @@ export default function Layout() {
 
   const roleClass = ROLE_STYLE[user?.role ?? ""] ?? ROLE_STYLE.admin;
   const roleLabel = user?.role?.replace("_", " ") ?? "";
+  const theme = themeFor(user?.role);
+  const LogoIcon = theme.Icon;
 
   return (
-    <div className="flex h-screen bg-[#0b0f1a]">
+    <div className="flex h-screen bg-[#0b0f1a]" data-role={user?.role} style={roleCssVars(user?.role)}>
       <aside className="w-64 relative flex flex-col text-slate-300 border-r border-white/10
                         bg-gradient-to-b from-[#121a2e] via-[#0e1424] to-[#0b0f1a]
                         shadow-[4px_0_40px_-12px_rgba(0,0,0,0.7)]">
-        {/* top accent glow */}
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-40 bg-gradient-to-b from-brand-500/10 to-transparent" />
-        {/* Brand block */}
+        {/* top accent glow — tinted by the active role */}
+        <div
+          className="pointer-events-none absolute inset-x-0 top-0 h-40"
+          style={{ background: `linear-gradient(to bottom, rgba(${theme.accentRgb},0.14), transparent)` }}
+        />
+        {/* Brand block — per-role product identity */}
         <div className="relative px-5 py-5 border-b border-white/10">
           <div className="flex items-center gap-3">
             <div className="relative shrink-0">
-              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-brand-500 to-accent-500 flex items-center justify-center shadow-glow-accent ring-1 ring-white/10">
-                <Activity size={18} className="text-white" strokeWidth={2.5} />
+              <div
+                className="w-9 h-9 rounded-xl flex items-center justify-center ring-1 ring-white/10"
+                style={{
+                  background: `linear-gradient(135deg, ${theme.gradient[0]}, ${theme.gradient[1]})`,
+                  boxShadow: `0 8px 30px -8px rgba(${theme.accentRgb},0.55)`,
+                }}
+              >
+                <LogoIcon size={18} className="text-white" strokeWidth={2.5} />
               </div>
               <span className="absolute -right-0.5 -bottom-0.5 w-2.5 h-2.5 bg-emerald-400 rounded-full ring-2 ring-[#0e1424] animate-pulse" />
             </div>
             <div className="min-w-0">
-              <p className="font-semibold text-white leading-tight tracking-tight">TDAH</p>
-              <p className="text-[10px] uppercase tracking-wider text-slate-500 leading-tight mt-0.5">Trend Data Aggregator Hyperintelligent</p>
+              <p className="font-semibold text-white leading-tight tracking-tight truncate" title={theme.product}>{theme.product}</p>
+              <p className="text-[10px] uppercase tracking-wider text-slate-500 leading-tight mt-0.5">{theme.subtitle}</p>
             </div>
           </div>
           {user?.role && (
@@ -120,19 +132,31 @@ export default function Layout() {
                   clsx(
                     "group relative flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150",
                     isActive
-                      ? "text-white bg-white/[0.07] ring-1 ring-white/10 shadow-[0_0_24px_-8px_rgba(91,134,255,0.6)]"
+                      ? "text-white bg-white/[0.07] ring-1 ring-white/10"
                       : "text-slate-400 hover:bg-white/[0.05] hover:text-white"
                   )
+                }
+                style={({ isActive }) =>
+                  isActive
+                    ? { boxShadow: `0 0 24px -8px rgba(${theme.accentRgb},0.6)` }
+                    : undefined
                 }
               >
                 {({ isActive }) => (
                   <>
                     {isActive && (
-                      <span className="absolute left-0 top-1.5 bottom-1.5 w-1 rounded-r-full bg-gradient-to-b from-brand-400 to-accent-400 shadow-[0_0_10px_rgba(91,134,255,0.7)]" />
+                      <span
+                        className="absolute left-0 top-1.5 bottom-1.5 w-1 rounded-r-full"
+                        style={{
+                          background: `linear-gradient(${theme.gradient[0]}, ${theme.gradient[1]})`,
+                          boxShadow: `0 0 10px rgba(${theme.accentRgb},0.7)`,
+                        }}
+                      />
                     )}
                     <Icon
                       size={17}
-                      className={clsx("shrink-0 transition-colors", isActive ? "text-brand-300" : "text-slate-500 group-hover:text-slate-200")}
+                      className={clsx("shrink-0 transition-colors", !isActive && "text-slate-500 group-hover:text-slate-200")}
+                      style={isActive ? { color: theme.accent } : undefined}
                     />
                     {label}
                   </>
