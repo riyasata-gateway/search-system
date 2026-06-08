@@ -355,8 +355,11 @@ export default function BrandPulse() {
                   return (
                     <div key={c.axis} className="rounded-lg border border-white/10 bg-white/[0.04] px-4 py-3">
                       <div className="flex items-center justify-between gap-2">
-                        <span className="text-[11px] font-medium uppercase tracking-wide text-slate-400 truncate flex items-center gap-1">
-                          {c.axis}<InfoTip text={metricDef(c.axis)} label={c.axis} />
+                        {/* truncate only the label text — keep InfoTip outside the
+                            overflow-hidden box, else its tooltip gets clipped */}
+                        <span className="min-w-0 flex items-center gap-1 text-[11px] font-medium uppercase tracking-wide text-slate-400">
+                          <span className="truncate">{c.axis}</span>
+                          <InfoTip text={metricDef(c.axis)} label={c.axis} />
                         </span>
                         <span className={`inline-flex shrink-0 items-center gap-1 text-[10px] font-semibold ${q.text}`}>
                           <span className={`h-1.5 w-1.5 rounded-full ${q.dot}`} />
