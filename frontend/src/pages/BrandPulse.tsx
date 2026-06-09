@@ -6,8 +6,8 @@ import {
   PieChart, Pie, Cell, Legend,
 } from "recharts";
 import {
-  TrendingUp, MessageSquare, AlertTriangle, Search, Loader2, ExternalLink,
-  Megaphone, Briefcase, Activity, Radio,
+  TrendingUp, Search, Loader2, ExternalLink,
+  Megaphone, Briefcase, Activity,
   CheckCircle2, Eye, Ban,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
@@ -15,6 +15,7 @@ import { useAuth } from "../hooks/useAuth";
 import FrameworkKpiSection from "../components/FrameworkKpiSection";
 import BrandPicker, { type PickerBrand } from "../components/BrandPicker";
 import RoleBanner from "../components/RoleBanner";
+import RoleHero from "../components/RoleHero";
 import InfoTip from "../components/InfoTip";
 import { define } from "../lib/glossary";
 
@@ -110,23 +111,6 @@ const headline = (bundle: any) => bundle?.metrics?.[0] ?? null;
 const fmt = (v: any) => (v == null ? "—" : typeof v === "number" ? Math.round(v) : v);
 
 // ── small presentational helpers ─────────────────────────────────────────────
-function KpiCard({ label, value, icon: Icon, colour, suffix, info }: any) {
-  return (
-    <div className="bg-white rounded-xl border border-gray-200 p-5">
-      <div className="flex items-center justify-between mb-3">
-        <span className="text-sm text-gray-500 flex items-center gap-1.5">
-          {label}
-          {info && <InfoTip text={info} label={label} />}
-        </span>
-        <Icon size={18} className={colour} />
-      </div>
-      <p className="text-3xl font-bold text-gray-900">
-        {value}
-        {suffix && <span className="text-base font-medium text-gray-400 ml-1">{suffix}</span>}
-      </p>
-    </div>
-  );
-}
 
 // A small labelled statistic (replaces the old horizontal gauge bars).
 // Explicit translucent-white fill so it stays visible on the dark canvas.
@@ -221,8 +205,18 @@ export default function BrandPulse() {
 
   if (isLoading && brandId != null) return <div className="text-gray-500 text-sm">Loading dashboard…</div>;
 
+  // Per-role section ORDER (CSS order on a flex column). Header/hero/role-panel
+  // stay at the top (order 0); the shared sections re-sequence by role:
+  //  • marketing (listening): lead with sentiment+topics charts → competitor →
+  //    framework KPIs → exec summary.
+  //  • brand_manager (command): lead with framework KPIs → competitor → exec
+  //    summary, and push the listening charts to the bottom (secondary).
+  const ord = isMarketing
+    ? { charts: 1, competitor: 2, framework: 3, exec: 4, cta: 5 }
+    : { framework: 1, competitor: 2, exec: 3, charts: 4, cta: 5 };
+
   return (
-    <div className="space-y-6">
+    <div className="flex flex-col gap-6">
       <RoleBanner />
       {/* Header: role-framed title + brand switcher + (admin) view toggle */}
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -268,15 +262,24 @@ export default function BrandPulse() {
         </div>
       )}
 
-      {/* Marketing headline row. (Non-marketing headline numbers — BPI, Launch
-          Readiness — live INSIDE their panels below so they aren't shown twice.) */}
-      {isMarketing && (
-        <div className="grid grid-cols-3 gap-4">
-          <KpiCard label="Total Reach (mentions)" info={define("Total Reach")} value={totalMentions} icon={Radio} colour="text-amber-500" />
-          <KpiCard label="Positive Sentiment" info={define("Positive Sentiment")} value={positivePct} suffix="%" icon={MessageSquare} colour="text-green-600" />
-          <KpiCard label="Demand Momentum" info={define("Demand Momentum")} value={fmt(momentumHead?.value)} suffix="/100" icon={Activity} colour="text-blue-600" />
-        </div>
-      )}
+      {/* Per-role cockpit hero — structurally distinct per role (listening vs
+          command), not just recoloured. Marketing's reach/sentiment/momentum and
+          brand-manager's BPI/launch/risk live here as the headline band. */}
+      <RoleHero
+        view={isMarketing ? "marketing" : "brand"}
+        role={role === "admin" ? (isMarketing ? "marketing" : "brand_manager") : role}
+        totalMentions={totalMentions}
+        positivePct={positivePct}
+        momentum={momentumHead?.value ?? null}
+        bpi={bpiHead?.value ?? null}
+        bpiInsufficient={bpiInsufficient}
+        launchVerdict={launchVerdict}
+        launchScore={launchHead?.value ?? null}
+        launchInsufficient={launchInsufficient}
+        riskMentions={riskMentions}
+        sentBreak={sentBreak}
+        onRisk={(role === "pharmacist" || role === "admin") ? () => navigate("/adverse-events") : undefined}
+      />
 
       {/* Role-specific intelligence panel */}
       {isMarketing ? (
@@ -309,14 +312,10 @@ export default function BrandPulse() {
           <div className="bg-white rounded-xl border border-gray-200 p-5">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-base font-semibold text-gray-900 flex items-center gap-1.5">
-                Brand Potential Index <InfoTip text={define("Brand Potential Index")} label="Brand Potential Index" />
+                BPI — Component Breakdown <InfoTip text={define("Brand Potential Index")} label="Brand Potential Index" />
               </h2>
-              <span className="flex items-baseline gap-1">
-                <span className="text-2xl font-bold text-white tabular-nums leading-none">{bpiInsufficient ? "n/a" : fmt(bpiHead?.value)}</span>
-                {!bpiInsufficient && <span className="text-[11px] text-slate-500">/100</span>}
-              </span>
             </div>
-            <p className="text-[11px] uppercase tracking-wide text-slate-500 mb-2">Components</p>
+            <p className="text-[11px] text-slate-500 mb-2">Score above = <span className="font-medium">average of the measured signals</span>. Greyed signals ("—") have no data and are excluded — not counted as zero.</p>
             {bpiInsufficient || bpiComponents.length === 0 ? (
               <p className="text-sm text-gray-400">Insufficient data — no mentions linked to this brand in the last 365 days, so a Brand Potential Index can't be scored yet.</p>
             ) : (
@@ -340,7 +339,7 @@ export default function BrandPulse() {
                     }
                   } else if (c.status === "no_signal" || v === 0) {
                     q = { word: "No signal", dot: "bg-slate-500", text: "text-slate-400" };
-                    display = "0"; muted = true;
+                    display = "—"; muted = true;   // excluded from the score — don't show a literal 0
                   } else if (v == null) {
                     q = { word: "No data", dot: "bg-slate-600", text: "text-slate-500" };
                     display = "—"; muted = true;
@@ -442,21 +441,14 @@ export default function BrandPulse() {
                 )}
               </div>
             </div>
-            <div className="pt-3 mt-3 border-t border-gray-100 flex items-center justify-between text-sm">
-              <span className="text-gray-600 flex items-center gap-1.5">
-                <AlertTriangle size={13} className="text-orange-500" />
-                {riskMentions} risk mention{riskMentions === 1 ? "" : "s"} — brand-risk / adverse-event queue
-              </span>
-              <button onClick={() => navigate("/adverse-events")} className="text-purple-600 hover:underline text-xs flex items-center gap-1">
-                Review <ExternalLink size={11} />
-              </button>
-            </div>
+            {/* (Brand-risk count + Review now live once, in the hero's Brand Risk
+                tile — removed here to avoid the duplicate line.) */}
           </div>
         </div>
       )}
 
       {summary && (
-        <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-100 rounded-xl p-5">
+        <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-100 rounded-xl p-5" style={{ order: ord.exec }}>
           <div className="flex items-center gap-2 mb-3">
             <TrendingUp size={16} className="text-blue-600" />
             <h2 className="text-sm font-semibold text-blue-900">Executive Summary — what changed &amp; what to do</h2>
@@ -469,10 +461,12 @@ export default function BrandPulse() {
       {/* Datatopia framework KPIs for this brand, scoped to the role */}
       {/* Demand/Buzz momentum is already the headline (Launch & Demand panel /
           Buzz Momentum card) — exclude the duplicate grid KPI so it shows once. */}
-      <FrameworkKpiSection brandId={brandId} role={frameworkRole} excludeKeys={["mk_search_momentum"]} />
+      <div style={{ order: ord.framework }}>
+        <FrameworkKpiSection brandId={brandId} role={frameworkRole} excludeKeys={["mk_search_momentum"]} />
+      </div>
 
       {/* Shared analytics: sentiment + topics */}
-      <div className="grid grid-cols-2 gap-6">
+      <div className="grid grid-cols-2 gap-6" style={{ order: ord.charts }}>
         {sentimentPieData.length > 0 && (
           <div className="bg-white rounded-xl border border-gray-200 p-5">
             <h2 className="text-base font-semibold text-gray-900 mb-4">Sentiment Breakdown</h2>
@@ -509,7 +503,7 @@ export default function BrandPulse() {
       </div>
 
       {/* Live competitor intelligence (shared) */}
-      <div className="bg-white rounded-xl border border-gray-200">
+      <div className="bg-white rounded-xl border border-gray-200" style={{ order: ord.competitor }}>
         <div className="px-5 py-4 border-b border-gray-100">
           <h2 className="text-base font-semibold text-gray-900">Live Competitor Intelligence</h2>
           <p className="text-xs text-gray-400 mt-0.5">Search any competitor brand or drug to see what people are saying right now.</p>
@@ -577,7 +571,7 @@ export default function BrandPulse() {
         </div>
       </div>
 
-      <div className="bg-gradient-to-r from-blue-600 to-indigo-600 rounded-xl p-5 flex items-center justify-between">
+      <div className="bg-gradient-to-r from-blue-600 to-indigo-600 rounded-xl p-5 flex items-center justify-between" style={{ order: ord.cta }}>
         <div>
           <h2 className="text-white font-semibold">Search brand mentions</h2>
           <p className="text-blue-100 text-sm mt-0.5">Explore what people are saying about any brand or drug across all sources.</p>

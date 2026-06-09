@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from core.config import settings
@@ -35,6 +35,7 @@ from intelligence.inn_resolver import resolve_inn
 from ingestion.connectors.ansm import ANSMConnector
 from ingestion.connectors.app_store import AppStoreReviewsConnector
 from ingestion.connectors.bcfi import BCFIConnector
+from ingestion.connectors.carenity import CarenityConnector
 from ingestion.connectors.belgium_health_data import BelgiumHealthDataConnector
 from ingestion.connectors.clinical_trials import ClinicalTrialsConnector
 from ingestion.connectors.doctissimo import DoctissimoConnector
@@ -46,11 +47,13 @@ from ingestion.connectors.pubmed import PubMedConnector
 from ingestion.connectors.reddit import RedditConnector
 from ingestion.connectors.rss_news import RSSNewsConnector
 from ingestion.connectors.safety_gate import SafetyGateConnector
+from ingestion.connectors.trustpilot import TrustpilotConnector
 from ingestion.connectors.wikipedia import WikipediaConnector
 from ingestion.connectors.youtube import YouTubeConnector
 from ingestion.deduplication import compute_text_hash, is_text_too_short, sanitise_text
 from models.brand import Brand
 from models.mention import EntityType, Mention, MentionEntity
+from processing.brand_match import text_mentions_brand
 
 # Product market is Belgium. Belgium is bilingual (FR + NL), and we keep EN for
 # international evidence sources (PubMed/trials). Country focus is strictly BE.
@@ -64,6 +67,10 @@ SUBSTANCE_SOURCES = {"openfda", "eudravigilance"}
 # "levetiracetam", not "Keppra"), and by the brand for cosmetics. The ANSM (FR)
 # and FAGG/Belgium shortage lists are indexed by molecule too, so they join here.
 SCIENTIFIC_SOURCES = {"pubmed", "clinical_trials", "bcfi", "ansm", "belgium_health"}
+
+# A molecule-queried paper relevant to more than this many tracked brands is a
+# general/substance article, not brand-specific signal — don't attribute it.
+MAX_EVIDENCE_FANOUT = 3
 
 
 def _brand_terms(name: str):
@@ -93,6 +100,8 @@ CONNECTORS = {
     "reddit": RedditConnector,
     "ansm": ANSMConnector,
     "doctissimo": DoctissimoConnector,
+    "carenity": CarenityConnector,
+    "trustpilot": TrustpilotConnector,
     "safety_gate": SafetyGateConnector,
     # Belgium-native: FAGG/AFMPS shortages + BCFI/CBIP guidance + data.gov.be.
     "belgium_health": BelgiumHealthDataConnector,
@@ -198,11 +207,27 @@ def main():
                         )
                         db.add(m)
                         db.flush()
-                    # Link this mention straight to the brand we queried for.
+                    molecule_query = bool(inn) and (s in SUBSTANCE_SOURCES or s in SCIENTIFIC_SOURCES)
+                    text = m.clean_text or m.raw_text or ""
+                    if molecule_query:
+                        existing_fanout = db.execute(
+                            select(func.count()).select_from(MentionEntity).where(
+                                MentionEntity.mention_id == m.id,
+                                MentionEntity.entity_type == EntityType.brand,
+                            )
+                        ).scalar() or 0
+                        if existing_fanout >= MAX_EVIDENCE_FANOUT:
+                            continue  # non-specific (shared molecule) — skip
+                        link_conf = 0.5  # evidence-class: molecule-level, not consumer
+                    else:
+                        if not text_mentions_brand(text, _brand_terms(brand.name)):
+                            continue  # query returned something not about the brand
+                        link_conf = 0.9
+
                     if (brand.id, m.id) not in linked:
                         db.add(MentionEntity(
                             mention_id=m.id, entity_type=EntityType.brand,
-                            entity_id=brand.id, confidence=0.9,
+                            entity_id=brand.id, confidence=link_conf,
                         ))
                         linked.add((brand.id, m.id))
                         kept += 1

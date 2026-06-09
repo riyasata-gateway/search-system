@@ -3,6 +3,7 @@ from typing import Dict, List, Optional, Tuple
 
 from core.config import settings
 from core.logging import get_logger
+from processing.brand_match import text_mentions_brand
 
 logger = get_logger(__name__)
 
@@ -78,8 +79,11 @@ class PharmaEntityDictionary:
         found = []
         text_lower = text.lower()
 
+        # Word-boundary match (not raw substring): "roc" must not match "maroc",
+        # "life" must not match "lifestyle". Short aliases are too collision-prone
+        # to attribute a free-text mention and are skipped here.
         for alias, (entity_id, confidence) in self._brand_map.items():
-            if alias in text_lower:
+            if text_mentions_brand(text_lower, [alias]):
                 found.append({
                     "entity_type": "brand",
                     "entity_id": entity_id,
@@ -88,7 +92,7 @@ class PharmaEntityDictionary:
                 })
 
         for alias, (entity_id, confidence) in self._product_map.items():
-            if alias in text_lower:
+            if text_mentions_brand(text_lower, [alias]):
                 if not any(f["entity_type"] == "product" and f["entity_id"] == entity_id for f in found):
                     found.append({
                         "entity_type": "product",

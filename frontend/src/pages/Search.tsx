@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   PieChart, Pie, Cell, ResponsiveContainer, Tooltip,
   AreaChart, Area, XAxis, YAxis,
@@ -483,64 +483,6 @@ function SentimentByTopic({ rows }: { rows: CrossRow[] }) {
 }
 
 // Role-aware metrics dashboard — auto-filled from server-computed `metrics`.
-// Format a DIA MetricValue for display (score 0–100, percent, abs count).
-function fmtMetric(m: MetricValue): string {
-  if (m.kind === "percent") return `${m.value.toFixed(0)}%`;
-  if (m.kind === "score") return m.value.toFixed(0);
-  return m.value.toLocaleString("en-GB");
-}
-
-const FW_LABEL: Record<string, string> = {
-  bpi: "Brand Potential Index",
-  momentum: "Demand momentum",
-  lifecycle: "Lifecycle",
-  launch_readiness: "Launch readiness",
-};
-
-// DIA framework tier — corpus-based brand intelligence (BPI/SoV/momentum/…).
-function FrameworkPanel({ framework, brandName }: { framework: FrameworkMetrics; brandName: string }) {
-  const order = ["bpi", "momentum", "lifecycle", "launch_readiness"];
-  const bundles = order.filter((k) => framework.bundles[k]).map((k) => [k, framework.bundles[k]] as const);
-  if (!bundles.length) return null;
-  return (
-    <div className="rounded-xl border border-violet-200 bg-gradient-to-br from-violet-500/10 to-transparent p-3.5 shadow-soft">
-      <p className="text-[11px] font-semibold uppercase tracking-wider text-violet-700 mb-2.5 flex items-center gap-1.5">
-        <Briefcase size={12} /> DIA brand intelligence · <span className="text-violet-900">{brandName}</span>
-        <span className="ml-1 normal-case text-[10px] text-violet-400 font-normal">corpus-based · the searched brand</span>
-      </p>
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-        {bundles.map(([key, b]) => {
-          const head = b.metrics[0];
-          const rest = b.metrics.slice(1);
-          return (
-            <div key={key} className="rounded-lg border border-slate-200 bg-white p-3 shadow-soft">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">{FW_LABEL[key] ?? b.name}</p>
-              {head && (
-                <p className="text-2xl font-bold tabular-nums text-violet-700 leading-none mt-1">
-                  {fmtMetric(head)}
-                  {head.confidence != null && (
-                    <span className="ml-1.5 text-[10px] font-normal text-slate-400 align-middle">conf {(head.confidence * 100).toFixed(0)}%</span>
-                  )}
-                </p>
-              )}
-              {rest.length > 0 && (
-                <div className="mt-2 space-y-1">
-                  {rest.map((m) => (
-                    <div key={m.label} className="flex items-center justify-between gap-2 text-[11px]">
-                      <span className="text-slate-500 truncate">{m.label}</span>
-                      <span className="tabular-nums font-medium text-slate-700">{fmtMetric(m)}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
 function InsightPanel({ intel }: { intel: SearchIntelligence }) {
   const metrics = intel.snapshot;
   const sentimentData = metrics.sentiment_mix.map((s) => ({ name: s.label, value: s.count, key: s.label }));
@@ -553,15 +495,11 @@ function InsightPanel({ intel }: { intel: SearchIntelligence }) {
 
   return (
     <div className="space-y-3">
-      {/* Headline KPI row — combines DIA framework (for resolved brand) + snapshot */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
-        {intel.headline.map((k) => <MetricKpi key={k.key} k={k} />)}
+        {intel.headline
+          .filter((k) => !["bpi", "sov", "momentum", "launch"].includes(k.key))
+          .map((k) => <MetricKpi key={k.key} k={k} />)}
       </div>
-
-      {/* DIA framework tier — only when the query resolved to a known brand */}
-      {intel.brand_resolved && intel.framework && (
-        <FrameworkPanel framework={intel.framework} brandName={intel.brand_name ?? "brand"} />
-      )}
 
       {/* Chart grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -1354,6 +1292,22 @@ function LiveSearchPanel({ role }: { role: Role }) {
   const [filterSentiment, setFilterSentiment] = useState<string>(_saved.filterSentiment ?? "");
   const [period, setPeriod] = useState<string>(_saved.period ?? "all");
   const [showFilters, setShowFilters] = useState(false);
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // Honour a `?q=` deep-link (e.g. "Review brand risk", "Full search" buttons):
+  // pre-fill + run the search, optionally focusing the risk view with `?risk=1`,
+  // then clear the params so a later manual search isn't overridden.
+  useEffect(() => {
+    const urlQ = (searchParams.get("q") ?? "").trim();
+    if (urlQ.length >= 2) {
+      setQuery(urlQ);
+      setSubmitted(urlQ);
+      pushRecent(urlQ);
+      if (searchParams.get("risk") === "1") setFilterSentiment("negative");
+      setSearchParams({}, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     try {

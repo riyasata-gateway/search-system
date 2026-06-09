@@ -222,9 +222,12 @@ export default function BrandPotential() {
 
   return (
     <div className="space-y-6 max-w-7xl animate-fade-up">
-      {/* Header */}
-      <div className="relative rounded-2xl overflow-hidden border border-slate-200/70 bg-white shadow-soft">
-        <div className="absolute inset-0 bg-gradient-to-br from-accent-500/10 via-transparent to-brand-500/10 pointer-events-none" />
+      {/* Header — no `overflow-hidden` here: it would clip the BrandPicker dropdown.
+          The gradient overlay is rounded to match instead of relying on the clip.
+          `z-30` lifts the whole header (and its dropdown) above the cards below,
+          which otherwise paint over the absolutely-positioned popover. */}
+      <div className="relative z-30 rounded-2xl border border-slate-200/70 bg-white shadow-soft">
+        <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-accent-500/10 via-transparent to-brand-500/10 pointer-events-none" />
         <div className="relative px-6 py-5 flex flex-wrap items-center gap-4">
           <div className="shrink-0 w-11 h-11 rounded-xl bg-gradient-to-br from-accent-500 to-brand-500 flex items-center justify-center shadow-elevated">
             <Sparkles size={20} className="text-white" strokeWidth={2.4} />

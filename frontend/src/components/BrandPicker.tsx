@@ -7,6 +7,7 @@ import {
   CircleDashed, Loader2, Check,
 } from "lucide-react";
 import clsx from "clsx";
+import { useTheme } from "../lib/theme";
 
 /**
  * BrandPicker — pick any of the ~2k classified brands, organised by the 5-code
@@ -35,18 +36,32 @@ type CatalogResponse = {
   page_size: number; category: string | null; q: string | null; brands: PickerBrand[];
 };
 
-// Per-category dark-canvas tints (explicit, not the global reskin).
-const CAT_STYLE: Record<string, { chip: string; active: string; badge: string }> = {
+type CatTints = { chip: string; active: string; badge: string };
+
+// Per-category tints — dark-canvas variant + a light variant, picked by theme.
+const CAT_STYLE_DARK: Record<string, CatTints> = {
   NUT: { chip: "border-emerald-400/30 text-emerald-300", active: "bg-emerald-500/20 ring-emerald-400/50", badge: "bg-emerald-500/15 text-emerald-300 border-emerald-400/30" },
   RX:  { chip: "border-sky-400/30 text-sky-300",         active: "bg-sky-500/20 ring-sky-400/50",         badge: "bg-sky-500/15 text-sky-300 border-sky-400/30" },
   PAC: { chip: "border-violet-400/30 text-violet-300",   active: "bg-violet-500/20 ring-violet-400/50",   badge: "bg-violet-500/15 text-violet-300 border-violet-400/30" },
   PEC: { chip: "border-amber-400/30 text-amber-300",     active: "bg-amber-500/20 ring-amber-400/50",     badge: "bg-amber-500/15 text-amber-300 border-amber-400/30" },
   OTC: { chip: "border-cyan-400/30 text-cyan-300",       active: "bg-cyan-500/20 ring-cyan-400/50",       badge: "bg-cyan-500/15 text-cyan-300 border-cyan-400/30" },
 };
-const NEUTRAL = { chip: "border-white/15 text-slate-300", active: "bg-white/15 ring-white/30", badge: "bg-white/10 text-slate-300 border-white/15" };
+const CAT_STYLE_LIGHT: Record<string, CatTints> = {
+  NUT: { chip: "border-emerald-300 text-emerald-700", active: "bg-emerald-100 ring-emerald-300", badge: "bg-emerald-100 text-emerald-700 border-emerald-300" },
+  RX:  { chip: "border-sky-300 text-sky-700",         active: "bg-sky-100 ring-sky-300",         badge: "bg-sky-100 text-sky-700 border-sky-300" },
+  PAC: { chip: "border-violet-300 text-violet-700",   active: "bg-violet-100 ring-violet-300",   badge: "bg-violet-100 text-violet-700 border-violet-300" },
+  PEC: { chip: "border-amber-300 text-amber-700",     active: "bg-amber-100 ring-amber-300",     badge: "bg-amber-100 text-amber-700 border-amber-300" },
+  OTC: { chip: "border-cyan-300 text-cyan-700",       active: "bg-cyan-100 ring-cyan-300",       badge: "bg-cyan-100 text-cyan-700 border-cyan-300" },
+};
+const NEUTRAL_DARK  = { chip: "border-white/15 text-slate-300", active: "bg-white/15 ring-white/30",   badge: "bg-white/10 text-slate-300 border-white/15" };
+const NEUTRAL_LIGHT = { chip: "border-gray-300 text-gray-600",  active: "bg-gray-200 ring-gray-300",   badge: "bg-gray-100 text-gray-600 border-gray-300" };
+
+const catTints = (code: string, dark: boolean): CatTints =>
+  (dark ? CAT_STYLE_DARK : CAT_STYLE_LIGHT)[code] ?? (dark ? NEUTRAL_DARK : NEUTRAL_LIGHT);
 
 export function CatBadge({ code }: { code: string }) {
-  const s = CAT_STYLE[code] ?? NEUTRAL;
+  const { theme } = useTheme();
+  const s = catTints(code, theme === "dark");
   return <span className={clsx("text-[10px] font-semibold px-1.5 py-0.5 rounded border", s.badge)}>{code}</span>;
 }
 
@@ -62,6 +77,38 @@ type Props = {
 
 export default function BrandPicker({ value, onSelect, selectedBrand, autoSelect = true }: Props) {
   const { user } = useAuth();
+  const { theme } = useTheme();
+  const dark = theme === "dark";
+  const neutral = dark ? NEUTRAL_DARK : NEUTRAL_LIGHT;
+  // Theme-aware popover chrome (the panel uses an arbitrary hex bg the global
+  // reskin can't touch, so the picker themes itself explicitly).
+  const ui = dark
+    ? {
+        panel: "border-white/10 bg-[#0f1626] ring-1 ring-black/40",
+        rail: "border-white/10 bg-white/[0.02]",
+        activeText: "text-white",
+        hover: "hover:bg-white/5",
+        search: "border-white/10 bg-white/[0.04] text-slate-100 placeholder:text-slate-500 focus:ring-white/30",
+        listBorder: "border-white/5",
+        divide: "divide-white/5",
+        rowSel: "bg-white/[0.08]",
+        rowHover: "hover:bg-white/[0.04]",
+        rowText: "text-slate-100",
+        pageHover: "hover:bg-white/10",
+      }
+    : {
+        panel: "border-gray-200 bg-white ring-1 ring-black/5",
+        rail: "border-gray-200 bg-gray-50",
+        activeText: "text-gray-900",
+        hover: "hover:bg-gray-100",
+        search: "border-gray-300 bg-white text-gray-900 placeholder:text-gray-400 focus:ring-blue-400",
+        listBorder: "border-gray-200",
+        divide: "divide-gray-100",
+        rowSel: "bg-gray-100",
+        rowHover: "hover:bg-gray-50",
+        rowText: "text-gray-900",
+        pageHover: "hover:bg-gray-100",
+      };
   const [open, setOpen] = useState(false);
   const [category, setCategory] = useState<string | null>(null);
   const [rawQ, setRawQ] = useState("");
@@ -160,10 +207,10 @@ export default function BrandPicker({ value, onSelect, selectedBrand, autoSelect
 
       {/* Popover — a two-pane cascade: category rail (left) → its brands (right) */}
       {open && (
-        <div className="absolute right-0 z-30 mt-2 w-[min(94vw,38rem)] rounded-xl border border-white/10 bg-[#0f1626] shadow-2xl ring-1 ring-black/40 overflow-hidden">
+        <div className={clsx("absolute right-0 z-30 mt-2 w-[min(94vw,38rem)] rounded-xl border shadow-2xl overflow-hidden", ui.panel)}>
           <div className="flex h-[min(60vh,30rem)]">
             {/* ── Level 1: category rail ─────────────────────────────────── */}
-            <div className="w-[11rem] shrink-0 border-r border-white/10 bg-white/[0.02] overflow-y-auto py-1.5">
+            <div className={clsx("w-[11rem] shrink-0 border-r overflow-y-auto py-1.5", ui.rail)}>
               {(() => {
                 const allActive = category === null;
                 return (
@@ -172,7 +219,7 @@ export default function BrandPicker({ value, onSelect, selectedBrand, autoSelect
                     onClick={() => selectCat(null)}
                     className={clsx(
                       "w-full text-left px-3 py-2 flex items-center gap-2 text-xs transition-colors",
-                      allActive ? clsx("text-white", NEUTRAL.active, "ring-1") : clsx(NEUTRAL.chip, "hover:bg-white/5")
+                      allActive ? clsx(ui.activeText, neutral.active, "ring-1") : clsx(neutral.chip, ui.hover)
                     )}
                   >
                     <span className="flex-1 font-medium">All brands</span>
@@ -182,7 +229,7 @@ export default function BrandPicker({ value, onSelect, selectedBrand, autoSelect
                 );
               })()}
               {categories.map((c) => {
-                const s = CAT_STYLE[c.code] ?? NEUTRAL;
+                const s = catTints(c.code, dark);
                 const active = category === c.code;
                 return (
                   <button
@@ -192,7 +239,7 @@ export default function BrandPicker({ value, onSelect, selectedBrand, autoSelect
                     title={`${c.code} / ${c.label_en} — ${c.definition}`}
                     className={clsx(
                       "w-full text-left px-3 py-2 flex items-center gap-2 text-xs transition-colors",
-                      active ? clsx("text-white", s.active, "ring-1") : clsx(s.chip, "hover:bg-white/5")
+                      active ? clsx(ui.activeText, s.active, "ring-1") : clsx(s.chip, ui.hover)
                     )}
                   >
                     <span className="flex-1 min-w-0">
@@ -216,7 +263,7 @@ export default function BrandPicker({ value, onSelect, selectedBrand, autoSelect
                   value={rawQ}
                   onChange={(e) => setRawQ(e.target.value)}
                   placeholder={category ? `Search ${category}…` : "Search all brands…"}
-                  className="w-full pl-8 pr-8 py-1.5 rounded-lg border border-white/10 bg-white/[0.04] text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-white/30"
+                  className={clsx("w-full pl-8 pr-8 py-1.5 rounded-lg border text-sm focus:outline-none focus:ring-1", ui.search)}
                 />
                 {isFetching && <Loader2 size={14} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 animate-spin" />}
               </div>
@@ -228,15 +275,15 @@ export default function BrandPicker({ value, onSelect, selectedBrand, autoSelect
                 <span>{total.toLocaleString()} {category ? `in ${category}` : "brands"}{q ? ` matching “${q}”` : ""}</span>
                 <span className="flex items-center gap-1.5">
                   <button type="button" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}
-                    className="p-0.5 rounded hover:bg-white/10 disabled:opacity-30"><ChevronLeft size={14} /></button>
+                    className={clsx("p-0.5 rounded disabled:opacity-30", ui.pageHover)}><ChevronLeft size={14} /></button>
                   <span className="tabular-nums">{page}/{totalPages}</span>
                   <button type="button" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}
-                    className="p-0.5 rounded hover:bg-white/10 disabled:opacity-30"><ChevronRight size={14} /></button>
+                    className={clsx("p-0.5 rounded disabled:opacity-30", ui.pageHover)}><ChevronRight size={14} /></button>
                 </span>
               </div>
 
               {/* Brand list */}
-              <ul className="flex-1 divide-y divide-white/5 overflow-y-auto rounded-lg border border-white/5">
+              <ul className={clsx("flex-1 divide-y overflow-y-auto rounded-lg border", ui.divide, ui.listBorder)}>
                 {brands.map((b) => {
                   const isSel = selectedId === b.id;
                   return (
@@ -246,11 +293,11 @@ export default function BrandPicker({ value, onSelect, selectedBrand, autoSelect
                         onClick={() => choose(b)}
                         className={clsx(
                           "w-full text-left px-3 py-2 flex items-center gap-2 transition-colors",
-                          isSel ? "bg-white/[0.08]" : "hover:bg-white/[0.04]"
+                          isSel ? ui.rowSel : ui.rowHover
                         )}
                       >
                         <CatBadge code={b.primary_category} />
-                        <span className="flex-1 min-w-0 truncate text-sm text-slate-100">{b.name}</span>
+                        <span className={clsx("flex-1 min-w-0 truncate text-sm", ui.rowText)}>{b.name}</span>
                         {b.is_medicine && (
                           <span title="Registered medicine (SAM)" className="shrink-0"><Pill size={13} className="text-sky-300" /></span>
                         )}

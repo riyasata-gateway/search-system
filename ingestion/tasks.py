@@ -15,6 +15,29 @@ from models.search_topic import SearchTopic
 logger = get_logger(__name__)
 
 
+def _guard_published_at(published, collected: datetime):
+    """Universal date-quality guard applied to EVERY connector at the single
+    persistence boundary.
+
+    Two invariants no source may violate:
+      • timezone-aware — a naive datetime is assumed UTC (some connectors, e.g.
+        RSS, emit host-local times) so all instants are comparable/bucketable.
+      • not in the future relative to collection — nothing can be "published"
+        after we became aware of it. Future / issue-dated records (PubMed
+        ahead-of-print, etc.) are clamped to ``collected`` so they can't peg
+        recency, freshness, or momentum windows.
+
+    Returns ``(published_at | None, was_clamped)``.
+    """
+    if published is None:
+        return None, False
+    if published.tzinfo is None:
+        published = published.replace(tzinfo=timezone.utc)
+    if published > collected:
+        return collected, True
+    return published, False
+
+
 def _topic_keywords(session, topic: SearchTopic) -> list:
     """Build a search-keyword list from a topic's brand, products, aliases,
     category and competitors. Returns human search terms (never raw ids)."""
@@ -134,18 +157,25 @@ def _persist_mentions(raw_mentions: list, source_type: str) -> int:
             if existing:
                 continue
 
+            collected = datetime.now(timezone.utc)
+
             retention_date = None
             if settings.MENTION_RETENTION_DAYS:
                 from datetime import timedelta
-                retention_date = datetime.now(timezone.utc) + timedelta(days=settings.MENTION_RETENTION_DAYS)
+                retention_date = collected + timedelta(days=settings.MENTION_RETENTION_DAYS)
+
+            published, clamped = _guard_published_at(raw.published_at, collected)
+            if clamped:
+                logger.warning("published_at_in_future_clamped",
+                               source_type=raw.source_type, source_url=raw.source_url)
 
             mention = Mention(
                 source_type=raw.source_type,
                 source_url=raw.source_url,
                 country=raw.country,
                 language=raw.language,
-                published_at=raw.published_at,
-                collected_at=datetime.now(timezone.utc),
+                published_at=published,
+                collected_at=collected,
                 text_hash=text_hash,
                 raw_text=raw.raw_text,
                 clean_text=clean,
