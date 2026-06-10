@@ -48,6 +48,20 @@ _SALT_SUFFIXES = [
     "acetate", "maleate", "lysine", "sodium", "besilate", "mesilate", "tartrate",
 ]
 
+# Excipient / mineral base-molecules that must NOT be treated as a brand's
+# defining active for generic-competition (e.g. Gaviscon/Rennie were resolving to
+# "calcium" — an antacid mineral — instead of their real active).
+_DENY_MOLECULES = {
+    "calcium", "magnesium", "sodium", "potassium", "aluminium", "aluminum",
+    "sodium hydrogen", "sodium chloride", "water", "glucose", "lactose",
+    "calcium phosphate", "silica", "talc",
+}
+
+# Belgian parallel importers — they hold many repackaged AMPs, so "most packs"
+# wrongly returns them as the MAH (e.g. Voltaren → "PI Pharma"). Skip them when
+# picking the marketing-authorisation holder.
+_PARALLEL_IMPORTERS = {"pi pharma", "impexeco"}
+
 
 def _local(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
@@ -115,6 +129,9 @@ def main():
                                       "prices": [], "reimb": [], "bt": False, "mtype": None,
                                       "statuses": set(), "comm": set(), "companies": Counter(),
                                       "supply": [], "limited": False, "eoc": set(),
+                                      # Per-brand pack-weight of each base molecule
+                                      # → the brand's DEFINING active (most packs):
+                                      "mol_packs": Counter(),
                                       # Dispensing + pricing position (per-pack, summed):
                                       "deliv_codes": set(), "cheapest_true": 0,
                                       "cheapest_false": 0, "clustered": False})
@@ -281,6 +298,12 @@ def main():
                 bn = _match(official.lower(), cand_to_brand)
                 if bn:
                     dat = brand_data[bn]
+                    # Pack-weight each rank-1 base molecule (excipients excluded) so
+                    # we can later pick the brand's DEFINING active, not the molecule
+                    # with the most market marketers.
+                    for _mb in rank1_bases:
+                        if _mb and _mb not in _DENY_MOLECULES:
+                            dat["mol_packs"][_mb] += 1
                     dat["subs"].update(subs); dat["cnk"].update(cnks)
                     dat["atc"].update(atcs); dat["prices"].extend(prices)
                     dat["reimb"].extend(reimb); dat["bt"] = dat["bt"] or bt
@@ -423,25 +446,28 @@ def main():
             "all_cheapest": bool(total and ct == total),
         }
 
-    def _molecule_competition(primary, company):
-        """Place the brand against every MAH marketing its molecule → originator
-        (earliest to market) vs generic/follow-on, and competitor count.
+    def _molecule_competition(primary, company, mol_packs):
+        """Place the brand against every MAH marketing its DEFINING molecule →
+        originator (earliest to market) vs generic/follow-on, and competitor count.
 
-        A brand's packs fragment across salts and combinations, so we score each
-        of its rank-1 base molecules against the market and report the most
-        contested one (the headline generic-competition signal)."""
+        The defining molecule is the one the brand has the MOST of its own packs in
+        (pack-weight) — NOT the molecule with the most market marketers, which let a
+        minority combo or excipient hijack the signal (Otrivine→fluticasone,
+        Gaviscon→calcium). Excipient/mineral bases are excluded entirely."""
         if not company:
             return None
-        best = None
-        for base in {_base_molecule(s) for s in (primary or [])} - {""}:
+        candidates = {_base_molecule(s) for s in (primary or [])} - {""} - _DENY_MOLECULES
+        scored = []
+        for base in candidates:
             comp_map = mol_index.get(base)
             if not comp_map or company not in comp_map:
                 continue
-            if best is None or len(comp_map) > best[1]:
-                best = (base, len(comp_map), comp_map)
-        if best is None:
+            # rank by the brand's own pack-weight first, market size as tiebreaker
+            scored.append((mol_packs.get(base, 0), len(comp_map), base, comp_map))
+        if not scored:
             return None
-        base, n, comp_map = best
+        scored.sort(reverse=True)
+        _, n, base, comp_map = scored[0]
         comms = [c for c in comp_map.values() if c]
         own = comp_map.get(company)
         return {
@@ -466,7 +492,17 @@ def main():
         # packs (the true MAH; parallel importers each hold only a few), not whichever
         # AMP happened to parse first.
         companies = dat.get("companies") or Counter()
-        company_val = (companies.most_common(1)[0][0] if companies else None) or nm.get("producer")
+        # Prefer the top holder that is NOT a known parallel importer (importers
+        # repackage many AMPs and would otherwise win "most packs" — e.g. Voltaren
+        # → "PI Pharma" instead of the originator).
+        company_val = None
+        for _cn, _ in companies.most_common():
+            if _cn and _cn.lower() not in _PARALLEL_IMPORTERS:
+                company_val = _cn
+                break
+        if company_val is None and companies:
+            company_val = companies.most_common(1)[0][0]
+        company_val = company_val or nm.get("producer")
         entry = {
             "is_medicine": is_med,
             "primary": prim_list,
@@ -499,7 +535,7 @@ def main():
             # Reimbursement-cluster pricing position (SAM Cheapest/HeadOfTheCluster).
             "pricing_position": _pricing_position(dat),
             # Originator-vs-generic, from the molecule's MAH set + first-to-market date.
-            "molecule_competition": _molecule_competition(prim_list, company_val),
+            "molecule_competition": _molecule_competition(prim_list, company_val, dat.get("mol_packs") or Counter()),
             "status": ("AUTHORIZED" if "AUTHORIZED" in dat.get("statuses", set())
                        else (sorted(dat.get("statuses", set()))[0] if dat.get("statuses") else None)),
             "ever_suspended": bool({"SUSPENDED", "WITHDRAWN", "REVOKED"} & dat.get("statuses", set())),

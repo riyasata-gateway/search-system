@@ -10,7 +10,8 @@ import {
 } from "lucide-react";
 import { apiClient } from "../api/client";
 import InfoTip from "../components/InfoTip";
-import BrandPicker, { type PickerBrand } from "../components/BrandPicker";
+import BrandPicker from "../components/BrandPicker";
+import { useSelectedBrand } from "../lib/selectedBrand";
 import { define } from "../lib/glossary";
 
 // ── types ────────────────────────────────────────────────────────────────────
@@ -118,11 +119,13 @@ function SectionCard({
 // ── main page ────────────────────────────────────────────────────────────────
 
 export default function BrandPotential() {
-  const [brandId, setBrandId] = useState<number | null>(null);
-  // Brand chosen via the category picker (any of the ~2k classified brands).
-  const [selectedBrand, setSelectedBrand] = useState<PickerBrand | null>(null);
-  // Product market is Belgium — default the lens there.
-  const [country, setCountry] = useState<string>("BE");
+  // Brand chosen via the category picker (any of the ~2k classified brands),
+  // shared with Brand Pulse so the selection carries across pages.
+  const [selectedBrand, setSelectedBrand] = useSelectedBrand();
+  const brandId = selectedBrand?.id ?? null;
+  // Product market is Belgium; data is BE-scoped. Selector removed (it changed
+  // nothing) — region/city geo is backlog B14.
+  const country = "BE";
   // Optimistic local state so action buttons give immediate feedback.
   const [decided, setDecided] = useState<Record<string, string>>({});
 
@@ -177,6 +180,7 @@ export default function BrandPotential() {
 
   const brandName = selectedBrand?.name ?? "—";
   const isMedicine = selectedBrand?.is_medicine ?? true; // default permissive until loaded
+  const noConsumer = selectedBrand != null && selectedBrand.data_profile === "catalog";
   const lifecycleStage: string = lifecycle?.context?.stage ?? "—";
 
   const topicBars = useMemo(() => {
@@ -240,23 +244,13 @@ export default function BrandPotential() {
             </p>
           </div>
 
-          {/* Brand + country selectors */}
+          {/* Brand selector */}
           <div className="flex flex-wrap gap-2">
             <BrandPicker
               value={brandId}
               selectedBrand={selectedBrand}
-              onSelect={(b) => { setBrandId(b.id); setSelectedBrand(b); }}
+              onSelect={(b) => setSelectedBrand(b)}
             />
-            <select
-              value={country}
-              onChange={(e) => setCountry(e.target.value)}
-              className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm shadow-soft focus:outline-none focus:border-accent-400"
-            >
-              <option value="BE">Belgium</option>
-              <option value="">All countries</option>
-              <option value="FR">France</option>
-              <option value="NL">Netherlands</option>
-            </select>
           </div>
         </div>
       </div>
@@ -264,6 +258,23 @@ export default function BrandPotential() {
       {lifecycleLoading && brandId != null && nbaList.length === 0 && (
         <div className="flex items-center justify-center py-20 text-slate-400">
           <Loader2 className="animate-spin mr-2" size={18} /> Loading brand intelligence…
+        </div>
+      )}
+
+      {brandId != null && noConsumer && (
+        <div className="flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4">
+          <Info size={18} className="text-amber-600 shrink-0 mt-0.5" />
+          <div className="text-sm text-slate-700">
+            <p className="font-semibold text-slate-900">
+              {brandName} is a supplier / catalogue brand — no consumer channel yet.
+            </p>
+            <p className="text-xs text-slate-600 mt-1 leading-relaxed">
+              We track it through the Belgian SAM drug-master and reference/safety feeds, but it has
+              no first-person consumer reviews or social discussion — so the consumer action layer
+              (lifecycle, message tuning, campaign pivots) doesn't apply. Its applicable metrics — SAM
+              portfolio, manufacturer, market status, pricing — are on <span className="font-semibold">Brand Pulse</span>.
+            </p>
+          </div>
         </div>
       )}
 
@@ -364,7 +375,10 @@ export default function BrandPotential() {
             )}
           </SectionCard>
 
-          {/* Lifecycle + Key message tuning */}
+          {/* Lifecycle + Key message tuning — consumer-signal panels, hidden for
+              supplier/catalogue brands that have no consumer channel. */}
+          {!noConsumer && (
+          <>
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <SectionCard icon={<Activity size={14} className="text-violet-600" />} title="Lifecycle" subtitle="Stage classification" info={define("Lifecycle")}>
               <div className="relative h-32 flex flex-col items-center justify-center">
@@ -470,6 +484,8 @@ export default function BrandPotential() {
               </ul>
             )}
           </SectionCard>
+          </>
+          )}
 
           {/* HCP Targeting — prescription-medicine concept only; hidden for parapharmacy */}
           {!isMedicine ? (

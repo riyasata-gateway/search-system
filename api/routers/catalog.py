@@ -38,7 +38,7 @@ from core.framework_catalog import (
 from intelligence.brand_actions import compute_brand_actions
 from intelligence.framework_kpis import compute_insights, compute_live_values
 from models.brand import Brand
-from models.mention import EntityType, MentionEntity
+from models.mention import EntityType, Mention, MentionEntity
 from models.user import User, UserRole
 
 router = APIRouter()
@@ -205,6 +205,23 @@ def brand_catalog(
             .distinct()
         ).scalars().all()
     )
+    # Consumer-signal set: brands with enough first-person OPINION mentions
+    # (reviews + conversational social) to support consumer KPIs. has_data alone
+    # is misleading — a B2B distributor with only corporate press is "has_data"
+    # but has no consumer channel, so its consumer panels would be empty. This
+    # mirrors the `data_profile` the brand-kpis endpoint computes (catalog vs not).
+    from core.source_taxonomy import OPINION_SOURCE_TYPES
+    consumer_ids = set(
+        db.execute(
+            select(MentionEntity.entity_id)
+            .select_from(MentionEntity)
+            .join(Mention, Mention.id == MentionEntity.mention_id)
+            .where(MentionEntity.entity_type == EntityType.brand)
+            .where(Mention.source_type.in_(list(OPINION_SOURCE_TYPES)))
+            .group_by(MentionEntity.entity_id)
+            .having(func.count() >= 5)
+        ).scalars().all()
+    )
     from intelligence.inn_resolver import is_belgian_medicine
 
     brands = [{
@@ -216,6 +233,7 @@ def brand_catalog(
         "rationale": b.category_rationale,
         "manufacturer": b.manufacturer,
         "has_data": b.id in data_ids,
+        "data_profile": "consumer" if b.id in consumer_ids else "catalog",
         "is_medicine": is_belgian_medicine(b.name),
     } for b in rows]
 
@@ -271,6 +289,20 @@ def brand_kpis(
 
     from core.framework_catalog import kpi_in_category
 
+    # Data profile (consumer / emerging / catalog) from the corpus footprint.
+    # For a "catalog" brand (B2B / supplier / catalogue — no consumer channel at
+    # all), the consumer-signal KPIs are not "insufficient", they don't apply:
+    # drop them so the brand shows its real, applicable spine (SAM portfolio,
+    # manufacturer, market status, reference/safety) instead of a wall of blanks.
+    profile = (live.get("_profile") or {}).get("profile", "consumer")
+    CONSUMER_ONLY = {
+        "mk_sentiment_trend", "mk_review_trend", "mk_review_momentum",
+        "mk_search_momentum", "mk_pivot_alert", "bm_review_momentum",
+        "bm_voice_share", "mk_share_of_voice", "bm_regional_split",
+        "ph_patient_sentiment", "ph_complaint_rate", "ph_demand_signal",
+        "ph_patient_questions", "bm_launch_readiness",
+    }
+
     kpis = []
     seen_names: set = set()   # admin aggregates all roles → dedupe shared KPIs
     for k in kpis_for_role(effective):
@@ -282,6 +314,9 @@ def brand_kpis(
         # Belt-and-braces: even within a medicine-bearing category, a specific
         # brand may not be a registered medicine (e.g. a dermocosmetic in OTC).
         if k["key"] in MEDICINE_ONLY and not is_med:
+            continue
+        # Catalog/supplier brand → consumer-signal KPIs don't apply (see above).
+        if profile == "catalog" and k["key"] in CONSUMER_ONLY:
             continue
         # The same metric is defined for >1 role (e.g. "Evidence base",
         # "Review momentum" for both brand_manager & marketing). In the admin
@@ -314,7 +349,7 @@ def brand_kpis(
     return {
         "role": effective,
         "brand": {"id": brand.id, "name": brand.name, "category": brand.category,
-                  "is_medicine": is_med},
+                  "is_medicine": is_med, "data_profile": profile},
         "kpis": kpis,
         "insights": insights,
         "sources": sources,

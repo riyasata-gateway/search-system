@@ -37,6 +37,7 @@ interface Props {
   momentum: number | null;
   bpi: number | null;
   bpiInsufficient: boolean;
+  bpiConfidence?: number | null;   // 0–1; surfaced as a confidence badge
   launchVerdict?: string;
   launchScore: number | null;
   launchInsufficient: boolean;
@@ -120,7 +121,12 @@ export default function RoleHero(p: Props) {
           {p.bpiInsufficient ? "n/a" : (p.bpi == null ? "—" : Math.round(p.bpi))}
           {!p.bpiInsufficient && p.bpi != null && <span className="text-lg text-white/70 ml-1">/100</span>}
         </p>
-        <p className="text-xs text-white/70 mt-1">composite · awareness × adoption × sentiment × fit</p>
+        <p className="text-xs text-white/70 mt-1">
+          composite · awareness × adoption × sentiment × fit
+          {!p.bpiInsufficient && p.bpiConfidence != null && (
+            <span className="ml-1.5 font-semibold text-white/90">· {Math.round(p.bpiConfidence * 100)}% confidence</span>
+          )}
+        </p>
       </div>
 
       <Tile accentRgb={rgb}>

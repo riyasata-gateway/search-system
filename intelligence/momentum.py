@@ -83,6 +83,7 @@ def _count_mentions(
     end: date,
     country: Optional[str] = None,
 ) -> int:
+    from core.source_taxonomy import DEMAND_SOURCE_TYPES
     q = (
         select(func.count(Mention.id))
         .join(MentionEntity, MentionEntity.mention_id == Mention.id)
@@ -92,6 +93,9 @@ def _count_mentions(
             Mention.published_at >= start,
             Mention.published_at < end,
             Mention.is_deleted.is_(False),
+            # Demand momentum reads CONSUMER demand only — literature/reference
+            # activity (PubMed, BCFI, openFDA, …) must not count as demand.
+            Mention.source_type.in_(DEMAND_SOURCE_TYPES),
         )
     )
     if country:
@@ -117,16 +121,23 @@ def compute_momentum(
     prev = _count_mentions(db, entity_type, entity_id, prev_start, cur_start, country)
     prev_prev = _count_mentions(db, entity_type, entity_id, prev_prev_start, prev_start, country)
 
-    velocity = ((cur - prev) / max(prev, 1)) * 100.0
-    prev_velocity = ((prev - prev_prev) / max(prev_prev, 1)) * 100.0
+    # Volume floor: a tiny count must not masquerade as momentum. With a bare
+    # max(prev,1) denominator a 0→3 move reads as +300% and saturates the score
+    # to 100 — which is why ~42% of low-activity brands used to show "Rising".
+    # Smooth the denominator (Laplace-style floor) AND require a minimum total
+    # across the three windows before the trend is trustworthy.
+    MIN_BASE = 5.0   # denominator floor — caps small-base blow-ups
+    MIN_TOTAL = 10   # below this there isn't enough volume to read a trend
+    velocity = ((cur - prev) / max(prev, MIN_BASE)) * 100.0
+    prev_velocity = ((prev - prev_prev) / max(prev_prev, MIN_BASE)) * 100.0
     acceleration = velocity - prev_velocity
 
     # Project acceleration into a 0–100 SCORE. Cap at ±200pp.
     capped = max(-200.0, min(200.0, acceleration))
     momentum_score = clamp_score(50.0 + (capped / 4.0))
-    # A brand with no mentions across all three windows has no momentum to read —
-    # the 50 baseline would otherwise be shown as a real "Moderate" demand signal.
-    has_signal = (cur + prev + prev_prev) > 0
+    # Not enough volume across the three windows → no real momentum to read;
+    # emit no signal rather than a saturated/neutral score.
+    has_signal = (cur + prev + prev_prev) >= MIN_TOTAL
 
     return MomentumResult(
         entity_type=entity_type,

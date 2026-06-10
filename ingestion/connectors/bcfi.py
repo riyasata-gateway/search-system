@@ -23,7 +23,7 @@ logger = get_logger(__name__)
 
 _SEARCH = "https://www.bcfi.be/{lang}/wp-json/wp/v2/search"
 _HEADERS = {"User-Agent": "PharmaWatch/1.0 (EU pharma research; +https://pharmawatch.eu/bot)"}
-_MAX_PER_KW = 8
+_MAX_PER_KW = 50   # was 8 — too few results per keyword (silent under-fetch)
 
 
 class BCFIConnector(BaseConnector):

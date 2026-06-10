@@ -35,9 +35,12 @@ _SELECT = (
     "product_category,alert_description,risk_legal_provision,alert_country,"
     "alert_other_countries,rapex_url"
 )
-# Pull a generous recent window of cosmetics alerts (newest first). 2000 covers
-# several years of cosmetics alerts; the API caps limit at 100 per page.
-_MAX_RECORDS = 2000
+# Pull the FULL cosmetics-alert set (the loop stops when rows run out). The old
+# 2000 "newest" cap reached back only to ~2025 and silently MISSED matches for
+# tracked brands whose alerts are older (e.g. Vichy 2022, most Nivea/Garnier) —
+# producing a false "0 matches". RAPEX cosmetics total ~5.4k; ODS offset cap is
+# 10000, so this fetches everything in one paginated pass.
+_MAX_RECORDS = 10000
 _PAGE = 100
 
 
@@ -121,7 +124,7 @@ class SafetyGateConnector(BaseConnector):
                     "other_countries": a.get("alert_other_countries"),
                 },
             ))
-            if len(out) >= 10:
+            if len(out) >= 60:   # per-brand cap (was 10 — a brand can have many alerts)
                 break
 
         logger.info("safety_gate_collected", count=len(out), keywords=keywords[:3])

@@ -64,7 +64,9 @@ class PubMedConnector(BaseConnector):
                             "db": "pubmed",
                             "term": keyword,
                             "retmode": "json",
-                            "retmax": 8,
+                            # Was 8 — far too few; a molecule can have hundreds of
+                            # papers, so 8 silently undercounts the evidence base.
+                            "retmax": 50,
                             "sort": "date",
                         },
                     )

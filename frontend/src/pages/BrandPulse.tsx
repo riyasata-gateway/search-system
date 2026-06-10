@@ -7,13 +7,13 @@ import {
 } from "recharts";
 import {
   TrendingUp, Search, Loader2, ExternalLink,
-  Megaphone, Briefcase, Activity,
-  CheckCircle2, Eye, Ban,
+  Megaphone, Briefcase,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import FrameworkKpiSection from "../components/FrameworkKpiSection";
-import BrandPicker, { type PickerBrand } from "../components/BrandPicker";
+import BrandPicker from "../components/BrandPicker";
+import { useSelectedBrand } from "../lib/selectedBrand";
 import RoleBanner from "../components/RoleBanner";
 import RoleHero from "../components/RoleHero";
 import InfoTip from "../components/InfoTip";
@@ -27,25 +27,6 @@ const SENTIMENT_COLOURS: Record<string, string> = {
 
 const TOPIC_COLOURS = ["#3b82f6", "#8b5cf6", "#f59e0b", "#10b981", "#f43f5e", "#06b6d4", "#84cc16"];
 
-// Launch verdict badge — explicit dark-canvas styling so it reads on the navy bg.
-const VERDICT_MAP: Record<string, { label: string; cls: string; icon: any }> = {
-  go: { label: "GO", cls: "bg-emerald-500/15 text-emerald-300 border-emerald-400/40", icon: CheckCircle2 },
-  monitor: { label: "MONITOR", cls: "bg-amber-500/15 text-amber-300 border-amber-400/40", icon: Eye },
-  hold: { label: "HOLD", cls: "bg-red-500/15 text-red-300 border-red-400/40", icon: Ban },
-};
-
-function VerdictBadge({ verdict }: { verdict?: string }) {
-  if (!verdict) return null;
-  const v = VERDICT_MAP[verdict] ?? { label: verdict.toUpperCase(), cls: "bg-white/10 text-slate-300 border-white/20", icon: Activity };
-  const Icon = v.icon;
-  return (
-    <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border ${v.cls}`}>
-      <Icon size={15} />
-      <span className="text-[10px] uppercase tracking-wide opacity-70">Launch verdict</span>
-      <span className="text-sm font-bold tracking-wide">{v.label}</span>
-    </div>
-  );
-}
 
 // ── data hooks (all brand-scoped via ?brand_id) ──────────────────────────────
 function brandParam(brandId: number | null) {
@@ -144,8 +125,9 @@ export default function BrandPulse() {
   // Admins view-as a role; everyone else is locked to their own role server-side.
   const frameworkRole = role === "admin" ? (isMarketing ? "marketing" : "brand_manager") : undefined;
 
-  const [brandId, setBrandId] = useState<number | null>(null);
-  const [activeBrand, setActiveBrand] = useState<PickerBrand | null>(null);
+  // Shared across pages — the brand picked here carries to Brand Potential.
+  const [activeBrand, setActiveBrand] = useSelectedBrand();
+  const brandId = activeBrand?.id ?? null;
 
   const [competitorInput, setCompetitorInput] = useState("");
   const [competitorQuery, setCompetitorQuery] = useState("");
@@ -251,7 +233,7 @@ export default function BrandPulse() {
           <BrandPicker
             value={brandId}
             selectedBrand={activeBrand}
-            onSelect={(b) => { setBrandId(b.id); setActiveBrand(b); }}
+            onSelect={(b) => setActiveBrand(b)}
           />
         </div>
       </div>
@@ -273,6 +255,7 @@ export default function BrandPulse() {
         momentum={momentumHead?.value ?? null}
         bpi={bpiHead?.value ?? null}
         bpiInsufficient={bpiInsufficient}
+        bpiConfidence={bpiHead?.confidence ?? null}
         launchVerdict={launchVerdict}
         launchScore={launchHead?.value ?? null}
         launchInsufficient={launchInsufficient}
@@ -406,18 +389,16 @@ export default function BrandPulse() {
               })()}
               <div className="flex-1 min-w-0 space-y-2.5">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-[11px] font-medium uppercase tracking-wide text-slate-400 flex items-baseline gap-1.5">
-                    Launch readiness
-                    {!launchInsufficient && (
-                      <span className="text-white font-bold text-base tabular-nums">{fmt(launchHead?.value)}<span className="text-[10px] text-slate-500 font-normal">/100</span></span>
-                    )}
+                  {/* The headline Launch Readiness score + verdict live ONCE, in
+                      the hero card above. Here we show only the component
+                      breakdown, so the same 74/100 + verdict isn't repeated. */}
+                  <span className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
+                    Launch readiness — breakdown
                   </span>
-                  {launchInsufficient ? (
+                  {launchInsufficient && (
                     <span className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] font-semibold text-slate-400">
                       Not scored yet
                     </span>
-                  ) : (
-                    <VerdictBadge verdict={launchVerdict} />
                   )}
                 </div>
                 {launchInsufficient ? (
@@ -426,13 +407,13 @@ export default function BrandPulse() {
                   </p>
                 ) : (
                   <div className="grid grid-cols-2 gap-2">
-                    {/* Launch-readiness sub-scores, EXCLUDING "BPI" and "Momentum"
-                        — those are already shown as the Brand Potential Index panel
-                        and the Demand-momentum gauge, so showing them here again
-                        (with launch-readiness's own values) was a duplicate. */}
+                    {/* Sub-scores EXCLUDING BPI + Momentum (already the BPI panel /
+                        Demand-momentum gauge) AND Lifecycle — its "95" is a fixed
+                        stage→fit constant, not a measurement, so it's shown as a
+                        stage on Brand Potential, not as a fake /100 tile here. */}
                     {(launch?.metrics ?? [])
                       .slice(1)
-                      .filter((m: any) => !["BPI", "Momentum"].includes(m.label))
+                      .filter((m: any) => !["BPI", "Momentum"].includes(m.label) && !String(m.label).startsWith("Lifecycle"))
                       .slice(0, 4)
                       .map((m: any, i: number) => (
                         <StatTile key={i} label={m.label} value={m.value} unit={m.unit === "%" ? "%" : ""} info={metricDef(m.label)} />

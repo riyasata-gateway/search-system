@@ -53,7 +53,9 @@ from ingestion.connectors.youtube import YouTubeConnector
 from ingestion.deduplication import compute_text_hash, is_text_too_short, sanitise_text
 from models.brand import Brand
 from models.mention import EntityType, Mention, MentionEntity
-from processing.brand_match import text_mentions_brand
+from processing.brand_match import text_mentions_brand, has_health_context, is_namesake_gated
+
+CONTEXT_GATED_SOURCES = {"rss", "news", "youtube", "forum", "doctissimo", "reddit", "wikipedia"}
 
 # Product market is Belgium. Belgium is bilingual (FR + NL), and we keep EN for
 # international evidence sources (PubMed/trials). Country focus is strictly BE.
@@ -114,11 +116,14 @@ async def _collect(conn, keywords):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--limit", type=int, default=30, help="max mentions kept per brand × source")
+    ap.add_argument("--limit", type=int, default=100, help="max mentions kept per brand × source (was 30 — raised so high-coverage brands aren't truncated)")
     ap.add_argument("--sources", default="pubmed,clinical_trials,openfda,rss")
     ap.add_argument("--only", default=None, help="comma-separated brand names to limit to (testing)")
     ap.add_argument("--all-brands", action="store_true",
                     help="ingest for EVERY catalogue brand (default: only the 31 workbook brands)")
+    ap.add_argument("--no-data-only", action="store_true",
+                    help="restrict to brands that currently have NO linked mentions (the 'grey' "
+                         "brands) — implies --all-brands so the full catalogue is in scope")
     args = ap.parse_args()
 
     sources = [s.strip() for s in args.sources.split(",") if s.strip() in CONNECTORS]
@@ -127,7 +132,7 @@ def main():
     engine = create_engine(settings.DATABASE_SYNC_URL)
     with Session(engine) as db:
         q = select(Brand).order_by(Brand.name)
-        if not args.all_brands:
+        if not (args.all_brands or args.no_data_only):
             # Default stays framework-only; --all-brands opens it to the full
             # supplier catalogue (idempotent + resumable, so safe to re-run).
             q = q.where(Brand.category.isnot(None))
@@ -141,6 +146,13 @@ def main():
             select(MentionEntity.entity_id, MentionEntity.mention_id)
             .where(MentionEntity.entity_type == EntityType.brand)
         ).all())
+
+        if args.no_data_only:
+            # Only the "grey" brands — those with no linked mention at all.
+            have = {bid for (bid, _mid) in linked}
+            before = len(brands)
+            brands = [b for b in brands if b.id not in have]
+            print(f"--no-data-only: {len(brands)} of {before} brands have no linked data")
 
         totals = {s: 0 for s in sources}
         inn_cache: dict[str, list] = {}  # brand -> resolved substances (per run)
@@ -222,6 +234,11 @@ def main():
                     else:
                         if not text_mentions_brand(text, _brand_terms(brand.name)):
                             continue  # query returned something not about the brand
+                        
+                        if s in CONTEXT_GATED_SOURCES and is_namesake_gated(brand.name, brand.category):
+                            extra = list(inn or []) + ([brand.manufacturer] if brand.manufacturer else [])
+                            if not has_health_context(text, extra):
+                                continue
                         link_conf = 0.9
 
                     if (brand.id, m.id) not in linked:

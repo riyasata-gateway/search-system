@@ -52,9 +52,10 @@ HEADERS = {
     "Accept-Language": "fr-BE,fr;q=0.9",
 }
 THROTTLE_SECONDS = 2.0
-MAX_DRUGS_PER_RUN = 40
-MAX_COMMENTS_PER_DRUG = 40
-MAX_INDEX_PAGES_PER_LETTER = 40  # safety cap; busiest letters run ~20 pages
+# No cap on matched drugs or comments — all matched drugs and all their patient
+# comments are relevant, so we fetch them all. The only bound is index-page
+# pagination per letter, a non-binding runaway guard (no letter exceeds ~20).
+MAX_INDEX_PAGES_PER_LETTER = 40
 _SLUG_RE = re.compile(r"/donner-mon-avis/medicaments/([a-z0-9-]+-\d+)")
 _PAGE_RE = re.compile(r"index-medicaments/[A-Z]\?page=(\d+)")
 
@@ -100,13 +101,13 @@ class CarenityConnector(BaseConnector):
             index = await self._get_index(client)
             # Match brand terms against drug names; fetch each matched drug once.
             matched_urls: Dict[str, str] = {}
+            # Fetch EVERY drug whose name matches a brand term — matched drugs are
+            # all relevant, so there's no arbitrary cap on how many we pull.
             for name_folded, url in index.items():
                 if url in matched_urls.values():
                     continue
                 if any(t in name_folded for t in terms):
                     matched_urls[name_folded] = url
-                if len(matched_urls) >= MAX_DRUGS_PER_RUN:
-                    break
             for url in matched_urls.values():
                 await asyncio.sleep(THROTTLE_SECONDS)
                 try:
@@ -163,7 +164,7 @@ class CarenityConnector(BaseConnector):
         drug = (h1.get_text(" ", strip=True).split(":")[0].strip() if h1 else keyword)
 
         out: List[RawMention] = []
-        for block in soup.select(".box-commentaire-public")[:MAX_COMMENTS_PER_DRUG]:
+        for block in soup.select(".box-commentaire-public"):   # all patient comments on the drug page
             body_node = block.select_one(".message")
             if not body_node:
                 continue

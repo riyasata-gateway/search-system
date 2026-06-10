@@ -97,7 +97,7 @@ class BelgiumHealthDataConnector(BaseConnector):
                 items = resp.json()
                 if not isinstance(items, list):
                     continue
-                for item in items[:8]:
+                for item in items[:50]:   # was 8 — under-fetched BE shortage/guidance items
                     title = item.get("title", "") or ""
                     href = item.get("url", "") or ""
                     subtype = item.get("subtype", "") or ""
@@ -152,7 +152,7 @@ class BelgiumHealthDataConnector(BaseConnector):
                     query_used=keyword,
                     metadata={"signal": "shortage"},
                 ))
-                if len(out) >= 10:
+                if len(out) >= 50:   # per-brand cap (was 10)
                     break
         except Exception as exc:
             logger.warning("fagg_shortage_failed", kw=keyword, error=str(exc))
@@ -168,7 +168,7 @@ class BelgiumHealthDataConnector(BaseConnector):
             if resp.status_code != 200:
                 return []
             soup = BeautifulSoup(resp.text, "html.parser")
-            for card in soup.select("article, div.dataset-content")[:5]:
+            for card in soup.select("article, div.dataset-content")[:25]:   # was 5
                 title = card.select_one("h2, h3, a")
                 snippet = card.select_one("p, .description, .summary")
                 if not title:

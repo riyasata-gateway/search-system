@@ -131,7 +131,7 @@ class EudraVigilanceConnector(BaseConnector):
             if not href.startswith("http"):
                 href = f"{ADRREPORTS_BASE}{href}" if href.startswith("/") else f"{ADRREPORTS_BASE}/en/{href}"
             out.append((name, href))
-            if len(out) >= 10:
+            if len(out) >= 50:   # per-brand cap (was 10)
                 break
         return out
 

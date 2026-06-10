@@ -51,8 +51,8 @@ CATEGORY_INDEXES = [
 ]
 BASE = "https://forum.doctissimo.fr"
 THROTTLE_SECONDS = 2.0
-MAX_SUBFORUMS = 30
-MAX_THREADS_PER_KEYWORD = 6
+MAX_SUBFORUMS = 50
+MAX_THREADS_PER_KEYWORD = 20   # was 6 — too few threads matched per keyword
 
 
 def _norm(s: str) -> str:

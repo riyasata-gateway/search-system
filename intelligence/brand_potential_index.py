@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
+from functools import lru_cache
 from typing import List, Optional
 
 from sqlalchemy import case, func, select
@@ -97,14 +98,22 @@ class BPIResult:
         )
 
 
+# Review/purchase sources: these drive ADOPTION (a review ≈ a purchase), so they
+# are excluded from AWARENESS (reach) to keep the two BPI components disjoint.
+_REVIEW_SOURCES = ("farmaline", "medimarket", "app_store")
+
+
 def _mentions_in_window(
     db: Session,
     entity_type: str,
     entity_ids: List[int],
     since: Optional[date],
     country: Optional[str] = None,
+    exclude_sources: Optional[tuple] = None,
 ) -> dict[int, int]:
-    """Mention count per entity. `since=None` means all-time (no lower bound)."""
+    """Mention count per entity. `since=None` means all-time (no lower bound).
+    `exclude_sources` drops those source_types (used to make Awareness a *reach*
+    signal from non-review sources, disjoint from review-driven Adoption)."""
     if not entity_ids:
         return {}
     q = (
@@ -121,6 +130,8 @@ def _mentions_in_window(
         q = q.where(Mention.published_at >= since)
     if country:
         q = q.where(Mention.country == country)
+    if exclude_sources:
+        q = q.where(Mention.source_type.notin_(exclude_sources))
     return {int(r.entity_id): int(r.c) for r in db.execute(q).fetchall()}
 
 
@@ -326,6 +337,46 @@ def _positive_voice_bulk(
     return {int(eid): float(w or 0.0) for eid, w in db.execute(q).fetchall()}
 
 
+@lru_cache(maxsize=1)
+def _atc_index() -> dict:
+    """{ATC-level-4 class → set(brand names)} from the SAM map — the real
+    'competing molecules' frame for medicines (e.g. M01AB = topical NSAIDs)."""
+    import json, os
+    idx: dict[str, set] = {}
+    path = "data/sam/brand_inn.json"
+    if not os.path.exists(path):
+        return idx
+    try:
+        data = json.load(open(path))
+    except Exception:
+        return idx
+    for name, meta in data.items():
+        for a in (meta.get("atc") or []):
+            code = (a.get("code") if isinstance(a, dict) else a) or ""
+            if len(code) >= 5:
+                idx.setdefault(code[:5], set()).add(name)
+    return idx
+
+
+def _atc_class_peers(db: Session, brand: Brand) -> List[int]:
+    """Brand IDs sharing any of the brand's ATC-4 classes (competing molecules).
+    Empty for non-medicines / brands with no ATC."""
+    from intelligence.inn_resolver import sam_meta
+    meta = sam_meta(brand.name) or {}
+    classes = {(a.get("code") or "")[:5] for a in (meta.get("atc") or []) if isinstance(a, dict) and a.get("code")}
+    classes.discard("")
+    if not classes:
+        return []
+    idx = _atc_index()
+    names = set()
+    for c in classes:
+        names |= idx.get(c, set())
+    if len(names) <= 1:
+        return []
+    rows = db.execute(select(Brand.id).where(Brand.name.in_(names))).fetchall()
+    return [int(r[0]) for r in rows]
+
+
 def _category_peers(db: Session, brand: Brand) -> List[int]:
     """Brand IDs in the target's competitive set.
 
@@ -351,6 +402,13 @@ def _category_peers(db: Session, brand: Brand) -> List[int]:
         peers = [int(r[0]) for r in db.execute(peers_q).fetchall() if r[0] is not None]
         if len(peers) > 1:
             return peers
+
+    # (A1) Medicines: the real "competing molecules" frame is the brands sharing an
+    # ATC-4 class (e.g. M01AB topical NSAIDs), from SAM — far better than lumping a
+    # drug into the ~1,000-brand primary_category bucket. Empty for non-medicines.
+    atc_peers = _atc_class_peers(db, brand)
+    if len(atc_peers) > 1:
+        return atc_peers
 
     # Fallback: peers sharing the brand's own category FAMILY (parenthetical
     # sub-types like 'Dermocosmetics (sun)' group with their parent family).
@@ -410,9 +468,17 @@ def compute_bpi(
     sole_brand = len(peers) <= 1
 
     # ── Peer signals (one bulk query each), then PERCENTILE RANK vs the field ──
+    # `mention_counts` = ALL linked mentions, used for the data-volume gate / sample
+    # size / confidence (total activity).
     mention_counts = _mentions_in_window(db, "brand", peers, voice_since, country)
     my_mentions = mention_counts.get(brand_id, 0)
-    awareness = _percentile_rank(my_mentions, list(mention_counts.values()))
+    # (A9) Awareness = REACH from non-review sources (news/social/search/forum),
+    # disjoint from review-driven Adoption — so review volume no longer inflates
+    # BOTH components. (Reviews are the purchase/adoption proxy, below.)
+    awareness_counts = _mentions_in_window(db, "brand", peers, voice_since, country,
+                                           exclude_sources=_REVIEW_SOURCES)
+    my_awareness = awareness_counts.get(brand_id, 0)
+    awareness = _percentile_rank(my_awareness, list(awareness_counts.values()))
 
     # Adoption: real pharmacy sales if wired, else the documented proxy
     # (purchase-intent + reviews + recommendations). One aggregate query over peers.
@@ -447,7 +513,7 @@ def compute_bpi(
             return "no_data"          # <2 peers carry a signal → can't rank
         return "no_signal" if raw <= 0 else "ok"   # genuine zero, not just lowest rank
 
-    awareness_status = _share_status(awareness, my_mentions)
+    awareness_status = _share_status(awareness, my_awareness)
     market_fit_status = _share_status(market_fit, positive_voice.get(brand_id, 0.0))
     adoption_status = _share_status(adoption, my_adoption_raw)
     if adoption_status == "ok" and adoption_is_proxy:
@@ -461,24 +527,31 @@ def compute_bpi(
         "market_fit": market_fit_status,
     }
 
-    # ── Score = mean of the components that are genuinely measured ────────────
-    # Excluding fallbacks (no_data/sole_brand) so the index reflects what we know,
-    # never a neutral filler. Insufficient when nothing is measurable.
+    # ── Score = WEIGHTED mean of the genuinely-measured components ────────────
+    # (A3) Explicit, documented weights instead of an implicit equal mean — the
+    # framework treats Awareness/Adoption as the demand spine, Sentiment/Market-fit
+    # as modifiers. Weights are renormalised over the measured set so unmeasured
+    # components (no_data/sole_brand) are excluded, never used as neutral filler.
     MEASURED = {"ok", "proxy"}
+    WEIGHTS = {"awareness": 0.30, "adoption": 0.25, "sentiment": 0.25, "market_fit": 0.20}
     comp_vals = {
         "awareness": (awareness or 0.0, awareness_status),
         "adoption": (adoption or 0.0, adoption_status),
         "sentiment": (sentiment, sentiment_status),
         "market_fit": (market_fit or 0.0, market_fit_status),
     }
-    measured = [v for (v, s) in comp_vals.values() if s in MEASURED]
-    # Insufficient only when there's genuinely nothing to score: no linked mentions,
-    # or not a single measurable component. A brand with real awareness (mention
-    # volume) still gets a score — its unmeasured components (e.g. sentiment, when the
-    # mentions aren't classified yet) are shown honestly as "No data", not hidden
-    # behind a misleading "no mentions linked" panel that contradicts its activity.
-    insufficient = my_mentions == 0 or len(measured) == 0
-    bpi_score = round(100.0 * sum(measured) / len(measured), 2) if measured else 0.0
+    measured = {k: v for k, (v, s) in comp_vals.items() if s in MEASURED}
+    if measured:
+        wtot = sum(WEIGHTS[k] for k in measured)
+        bpi_score = round(100.0 * sum(WEIGHTS[k] * v for k, v in measured.items()) / wtot, 2)
+    else:
+        bpi_score = 0.0
+
+    # (A2) Minimum-data gate: a confident composite needs a real volume of in-frame
+    # mentions, not 1–3. Below the floor (or with nothing measurable) the score is
+    # not a reading — surface "Insufficient data" rather than a number.
+    MIN_BPI_MENTIONS = 10
+    insufficient = my_mentions < MIN_BPI_MENTIONS or len(measured) == 0
 
     # ── Confidence ───────────────────────────────────────────────────────────
     # High when we have mentions, an uptake signal, sentiment volume, and >1 peer.

@@ -30,6 +30,8 @@ def process_pending_mentions(self, batch_size: int = 100):
     """
     from processing.language_detection import detect_language
     from processing.entity_resolution import resolve
+    from processing.brand_match import has_health_context
+    from core.source_taxonomy import NAMESAKE_GATED_SOURCE_TYPES
     from processing.llm_classifier import classify_mention, verify_risk_with_llm
     from processing.risk_detector import detect_risk
     from processing.embeddings import upsert_mention_embedding
@@ -47,6 +49,15 @@ def process_pending_mentions(self, batch_size: int = 100):
             .limit(batch_size)
         ).scalars().all()
 
+
+        from models.brand import Brand
+        from processing.brand_match import is_namesake_gated as _gated
+        gated_brand_ids = {
+            bid for bid, name, cat in db.execute(
+                select(Brand.id, Brand.name, Brand.category)
+            ).all() if _gated(name, cat)
+        }
+
         processed = 0
         for mention in unprocessed:
             try:
@@ -57,6 +68,15 @@ def process_pending_mentions(self, batch_size: int = 100):
                     mention.language = lang
 
                 entities = resolve(text, lang=lang, country=mention.country)
+                # Namesake guard: a SUPPLIER brand attribution from free-text
+                # news/social needs a pharma/health signal in the text, or a
+                # common-word name ("Abbott", "Euphoria") pulls TV/politics/watch
+                # coverage. Framework brands (curated category) are exempt.
+                if mention.source_type in NAMESAKE_GATED_SOURCE_TYPES and not has_health_context(text):
+                    entities = [
+                        e for e in entities
+                        if not (e["entity_type"] == "brand" and e["entity_id"] in gated_brand_ids)
+                    ]
                 for ent in entities:
                     existing_ent = db.execute(
                         select(MentionEntity).where(

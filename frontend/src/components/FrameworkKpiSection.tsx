@@ -42,7 +42,7 @@ type Kpi = {
 
 type BrandKpis = {
   role: string;
-  brand: { id: number; name: string; category: string | null };
+  brand: { id: number; name: string; category: string | null; is_medicine?: boolean; data_profile?: string };
   kpis: Kpi[];
   insights: string[];
 };
@@ -176,6 +176,19 @@ export default function FrameworkKpiSection({
       </div>
 
       <div className="p-5 space-y-5">
+        {/* Catalogue/supplier brand — no consumer channel; consumer KPIs are
+            suppressed server-side, so explain the trimmed set rather than imply
+            data is "missing". */}
+        {data?.brand?.data_profile === "catalog" && (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-3.5 text-[13px] text-slate-700">
+            <span className="font-semibold text-slate-900">Supplier / catalogue brand.</span>{" "}
+            Tracked via the Belgian SAM drug-master, reference/safety feeds (and any corporate press) —
+            but it has no first-person consumer reviews or social discussion, so the consumer KPIs
+            (sentiment, demand, review momentum) don't apply and aren't shown. The metrics below are
+            the ones that do.
+          </div>
+        )}
+
         {/* Auto-generated interpretation of the live KPIs */}
         {insights.length > 0 && (
           <div className="rounded-xl border border-amber-400/25 bg-amber-500/[0.07] p-4">
@@ -196,7 +209,7 @@ export default function FrameworkKpiSection({
         {isLoading ? (
           <p className="text-sm text-gray-400">Loading KPIs…</p>
         ) : kpis.length === 0 ? (
-          <p className="text-sm text-gray-400">No KPIs defined for this role.</p>
+          <p className="text-sm text-gray-400">No KPI data for this brand yet — it has no linked signals in the corpus.</p>
         ) : (
           <>
             {liveKpis.length > 0 ? (

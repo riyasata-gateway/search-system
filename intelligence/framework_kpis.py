@@ -23,6 +23,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from models.brand import Brand
+from core.source_taxonomy import OPINION_SOURCE_TYPES
 
 
 def _human(n: float) -> str:
@@ -58,14 +59,14 @@ def compute_live_values(db: Session, brand: Brand) -> Dict[str, dict]:
         SELECT count(*)                                        AS linked,
                count(m.rating)                                 AS rated,
                coalesce(avg(m.rating), 0)                      AS avg_rating,
-               count(mc.id)                                    AS classified,
-               sum((mc.sentiment = 'positive')::int)          AS pos,
-               sum((mc.sentiment = 'negative')::int)          AS neg
+               count(mc.id) FILTER (WHERE m.source_type = ANY(:op))  AS classified,
+               sum((mc.sentiment = 'positive' AND m.source_type = ANY(:op))::int) AS pos,
+               sum((mc.sentiment = 'negative' AND m.source_type = ANY(:op))::int) AS neg
         FROM mention_entities me
         JOIN mentions m ON m.id = me.mention_id
         LEFT JOIN mention_classifications mc ON mc.mention_id = m.id
         WHERE me.entity_type = 'brand' AND me.entity_id = :bid
-    """), {"bid": bid}).mappings().first()
+    """), {"bid": bid, "op": list(OPINION_SOURCE_TYPES)}).mappings().first()
 
     # Per-source counts for the ingested multi-source signals (PubMed, trials,
     # openFDA, news) linked to this brand.
@@ -368,6 +369,16 @@ def compute_live_values(db: Session, brand: Brand) -> Dict[str, dict]:
     attention = (cmap.get("rss", 0) + cmap.get("news", 0) + cmap.get("forum", 0)
                  + cmap.get("youtube", 0) + cmap.get("doctissimo", 0) + cmap.get("reddit", 0))
 
+    opinion_n = max(rated, classified)   # classified is opinion-scoped (see query)
+    if rated >= 20:
+        profile = "consumer"
+    elif opinion_n >= 5:
+        profile = "emerging"
+    else:
+        profile = "catalog"
+    out["_profile"] = {"profile": profile, "reviews": rated,
+                       "attention": attention, "opinion": opinion_n}
+
     # Review rating & volume (marketing) / public demand signal (pharmacist)
     if rated:
         out["mk_review_trend"] = {"value": avg_rating,
@@ -376,18 +387,29 @@ def compute_live_values(db: Session, brand: Brand) -> Dict[str, dict]:
         out["ph_demand_signal"] = {"value": rated, "display": f"{_human(rated)} reviews",
                "detail": "patient-review volume = what people are asking about", "count": rated}
     elif attention:
-        # No consumer reviews (typical for Rx) → use news/social/forum attention.
+        foot = ("Rx product" if is_medicine else "low consumer-review footprint")
         out["mk_review_trend"] = {"value": None, "display": "No consumer reviews",
-               "detail": f"Rx product — {_human(attention)} news/social mentions instead (no review channel)"}
+               "detail": f"{foot} — {_human(attention)} news/social mentions instead (no review channel)"}
         out["ph_demand_signal"] = {"value": attention, "display": f"{_human(attention)} mentions",
-               "detail": "news / social / forum attention (no consumer reviews — Rx)", "count": attention}
+               "detail": f"news / social / forum attention ({foot})", "count": attention}
 
-    # Sentiment (marketing trend / pharmacist patient sentiment)
-    if classified:
-        pct_pos = round(100 * pos / classified)
-        sent = {"value": pct_pos,
-                "display": f"{pct_pos}% positive",
-                "detail": f"{_human(pos)} positive · {_human(neg)} negative of {_human(classified)}"}
+    polar = pos + neg
+    MIN_POLAR = 5
+    MIN_REVIEW_BASE = 20    # min rated-review base for a stable derived rate
+    if polar > 0:
+        neutral = max(0, classified - polar)
+        if polar < MIN_POLAR:
+            sent = {"value": None,
+                    "display": f"{_human(pos)} positive · {_human(neg)} negative",
+                    "detail": f"only {polar} rated opinion(s) so far — raw counts, too few for a %",
+                    "confidence": "low"}
+        else:
+            pct_pos = round(100 * pos / polar)
+            sent = {"value": pct_pos,
+                    "display": f"{pct_pos}% positive",
+                    "detail": f"{_human(pos)} positive · {_human(neg)} negative"
+                              + (f" ({_human(neutral)} neutral excluded)" if neutral else ""),
+                    "confidence": "ok"}
         out["mk_sentiment_trend"] = sent
         out["ph_patient_sentiment"] = dict(sent)
     elif is_medicine:
@@ -397,13 +419,22 @@ def compute_live_values(db: Session, brand: Brand) -> Dict[str, dict]:
         out["mk_sentiment_trend"] = dict(na)
         out["ph_patient_sentiment"] = dict(na)
 
-    # Complaint rate (negative share) — pharmacist quality early-warning
-    if classified:
-        neg_pct = round(100 * neg / classified)
-        out["ph_complaint_rate"] = {
-            "value": neg_pct, "display": f"{neg_pct}%",
-            "detail": f"{_human(neg)} negative of {_human(classified)} reviews",
-        }
+    comp_base = rated if rated else polar
+    comp_lbl = "reviews" if rated else "classified opinions"
+    if comp_base > 0:
+        comp_neg = min(neg, comp_base)
+        min_base = MIN_REVIEW_BASE if rated else MIN_POLAR
+        if comp_base < min_base:
+            out["ph_complaint_rate"] = {
+                "value": None, "display": f"{_human(comp_neg)} negative of {_human(comp_base)}",
+                "detail": f"raw counts — only {comp_base} {comp_lbl}, too few for a rate",
+                "confidence": "low"}
+        else:
+            neg_pct = round(100 * comp_neg / comp_base)
+            out["ph_complaint_rate"] = {
+                "value": neg_pct, "display": f"{neg_pct}%",
+                "detail": f"{_human(comp_neg)} negative of {_human(comp_base)} {comp_lbl}",
+                "confidence": "ok"}
 
     # ── Review momentum (last 90d vs prior 90d) — demand trend, marketing + BM ─
     mom = db.execute(text("""
@@ -416,11 +447,22 @@ def compute_live_values(db: Session, brand: Brand) -> Dict[str, dict]:
           AND m.source_type IN ('farmaline', 'medimarket')
     """), {"bid": bid}).mappings().first()
     recent_n, prior_n = int(mom["recent"] or 0), int(mom["prior"] or 0)
+    # Tracks review-PUBLISH cadence (subject to ingestion timing), not demand.
+    # Shown whenever there's a prior base; flagged "thin base" below the threshold
+    # rather than hidden, so a ±% off 1–5 reviews is covered but clearly caveated.
+    # (MIN_REVIEW_BASE defined above, near MIN_POLAR.)
     if prior_n > 0:
-        pct = round(100 * (recent_n - prior_n) / prior_n)
-        arrow = "▲" if pct > 0 else "▼" if pct < 0 else "■"
-        rm = {"value": pct, "display": f"{arrow} {pct:+d}%",
-              "detail": f"{recent_n} reviews last 90d vs {prior_n} prior"}
+        if prior_n < MIN_REVIEW_BASE:
+            # Raw counts, not a % off a tiny base.
+            rm = {"value": None, "display": f"{recent_n} vs {prior_n} reviews",
+                  "detail": f"recent 90d {recent_n} vs prior {prior_n} reviews — too few for a % "
+                            f"(review-publish cadence)", "confidence": "low"}
+        else:
+            pct = round(100 * (recent_n - prior_n) / prior_n)
+            arrow = "▲" if pct > 0 else "▼" if pct < 0 else "■"
+            rm = {"value": pct, "display": f"{arrow} {pct:+d}%",
+                  "detail": f"{recent_n} reviews last 90d vs {prior_n} prior (review-publish cadence)",
+                  "confidence": "ok"}
         out["mk_review_momentum"] = dict(rm)
         out["bm_review_momentum"] = dict(rm)
 
@@ -446,13 +488,21 @@ def compute_live_values(db: Session, brand: Brand) -> Dict[str, dict]:
         }
 
     # ── Category Share of Voice (public side) — brand vs category peers ────────
-    # Framework brands use their fine-grained `category` family. The imported
-    # supplier brands have no family but DO share a 5-code `primary_category`, so
-    # they fall back to the data-bearing brands in that category — otherwise every
-    # new brand would be a degenerate "sole tracked brand".
     from core.framework_catalog import category_family, PRIMARY_CATEGORIES
+    from intelligence.brand_potential_index import _atc_class_peers
     peer_rows, basis = None, None
-    if brand.category:
+    atc_ids = _atc_class_peers(db, brand)
+    if len(atc_ids) > 1:
+        rows = db.execute(text("""
+            SELECT b.id, b.name, count(me.id) AS cnt
+            FROM brands b
+            LEFT JOIN mention_entities me ON me.entity_id = b.id AND me.entity_type = 'brand'
+            WHERE b.id = ANY(:ids)
+            GROUP BY b.id, b.name
+        """), {"ids": atc_ids}).mappings().all()
+        peer_rows = list(rows)
+        basis = "ATC-class peers' voice"
+    elif brand.category:
         fam = category_family(brand.category)
         rows = db.execute(text("""
             SELECT b.id, b.name, b.category,
@@ -462,10 +512,9 @@ def compute_live_values(db: Session, brand: Brand) -> Dict[str, dict]:
         """)).mappings().all()
         peer_rows = [r for r in rows if category_family(r["category"]) == fam]
         basis = f"{fam} review voice"
-    elif brand.primary_category:
-        # Single indexed GROUP BY (vs a correlated count subquery per peer, which
-        # is hundreds of subqueries for a big category like OTC → seconds/page).
-        # The JOIN also enforces "has data", so the peer set stays meaningful.
+    # Fall back to the primary_category bucket when the fine-category frame is degenerate
+    _peers_with_voice = 0 if peer_rows is None else sum(1 for r in peer_rows if int(r["cnt"] or 0) > 0)
+    if (peer_rows is None or _peers_with_voice <= 1) and brand.primary_category:
         rows = db.execute(text("""
             SELECT b.id, b.name, count(me.id) AS cnt
             FROM brands b
@@ -488,6 +537,7 @@ def compute_live_values(db: Session, brand: Brand) -> Dict[str, dict]:
             out["bm_voice_share"] = dict(sole)
         else:
             sov = round(100 * my_cnt / total)
+            sov_disp = "<1%" if (sov == 0 and my_cnt > 0) else f"{sov}%"
             # Ranked peer table (name + share), most-talked-about first.
             peers = sorted(
                 ({"name": r["name"], "share": round(100 * int(r["cnt"] or 0) / total),
@@ -502,7 +552,7 @@ def compute_live_values(db: Session, brand: Brand) -> Dict[str, dict]:
                 if self_p:
                     display = peers[:7] + [self_p]
             sov_card = {"value": sov,
-                        "display": f"{sov}%",
+                        "display": sov_disp,
                         "detail": f"of {basis} · #{rank} of {peer_count}",
                         "peers": display,
                         "peers_label": "Category mix",
@@ -517,19 +567,23 @@ def compute_live_values(db: Session, brand: Brand) -> Dict[str, dict]:
     # the panel and the "What this means" insight — one metric, one value.
     try:
         from intelligence.momentum import compute_momentum
-        h = _headline(compute_momentum(db, "brand", bid, period="90d"))
-        if h and (h.get("sample_size") or 0) > 0 and h.get("value") is not None:
-            val = round(float(h["value"]))
-            trend = "rising" if val >= 60 else "cooling" if val < 40 else "stable"
-            out["mk_search_momentum"] = {
-                "value": val, "display": f"{val}/100",
-                "detail": h.get("label") or "mention-volume momentum",
-            }
-            out["mk_pivot_alert"] = {
-                "value": val,
-                "display": trend.capitalize(),
-                "detail": f"weak-signal momentum {val}/100 — {trend}",
-            }
+        m = compute_momentum(db, "brand", bid, period="90d")
+        total_vol = m.current_count + m.prev_count + m.prev_prev_count
+        if total_vol > 0:
+            if not m.has_signal:
+                det = (f"recent {m.current_count} · prior {m.prev_count} · earlier "
+                       f"{m.prev_prev_count} mentions — too few (n={total_vol}) for a momentum score")
+                out["mk_search_momentum"] = {"value": None,
+                    "display": f"{m.current_count} mention(s) (90d)", "detail": det, "confidence": "low"}
+                out["mk_pivot_alert"] = {"value": None,
+                    "display": f"{total_vol} mentions · low volume", "detail": det, "confidence": "low"}
+            else:
+                val = round(float(m.momentum_score))
+                trend = "rising" if val >= 60 else "cooling" if val < 40 else "stable"
+                out["mk_search_momentum"] = {"value": val, "display": f"{val}/100",
+                    "detail": f"mention-volume momentum (n={total_vol})", "confidence": "ok"}
+                out["mk_pivot_alert"] = {"value": val, "display": trend.capitalize(),
+                    "detail": f"weak-signal momentum {val}/100 — {trend}", "confidence": "ok"}
     except Exception:
         pass
 
@@ -658,22 +712,24 @@ def compute_live_values(db: Session, brand: Brand) -> Dict[str, dict]:
         pass
 
     # ── OTC (cosmetic) · EU Safety Gate recall watch ──────────────────────────
-    # Safety Gate (RAPEX) covers cosmetics/personal-care recalls (not medicines or
-    # devices). For reputable pharmacy brands this is usually clean — which is
-    # itself a reassurance signal — and flags the rare brand with an EU alert.
-    out["otc_safety_gate"] = {
-        "value": safety_gate,
-        "display": "No EU recalls on record" if safety_gate == 0 else f"{safety_gate} recall alert(s)",
-        "detail": ("no EU Safety Gate (RAPEX) cosmetic alerts naming this brand — clean"
-                   if safety_gate == 0
-                   else "EU Safety Gate (RAPEX) cosmetic safety alerts naming this brand"),
-    }
+    feed_live = db.execute(text(
+        "SELECT EXISTS(SELECT 1 FROM mentions WHERE source_type='safety_gate' AND is_deleted=false)"
+    )).scalar()
+    if not feed_live:
+        out["otc_safety_gate"] = {
+            "value": None, "display": "Feed not connected",
+            "detail": "EU Safety Gate (RAPEX) not ingested yet — can't assert a clean record",
+        }
+    else:
+        out["otc_safety_gate"] = {
+            "value": safety_gate,
+            "display": "No EU recall on record" if safety_gate == 0 else f"{safety_gate} recall alert(s)",
+            "detail": ("checked the full EU Safety Gate (RAPEX) cosmetics alert set — this brand is not listed"
+                       if safety_gate == 0
+                       else "EU Safety Gate (RAPEX) cosmetic safety alert(s) naming this brand"),
+        }
 
     # ── Pharmacist · Belgian shortage watch — Belgium-first, from SAM supply data ──
-    # The authoritative Belgian availability signal is SAM's own SupplyProblem /
-    # LimitedAvailability / end-of-commercialisation data (dated, with reason &
-    # expected-return), which we extract directly — far richer than the empty FAGG
-    # news-page scrape. FAGG mention count is kept as a fallback.
     if is_medicine:
         sup = meta.get("supply") or {}
         active = sup.get("active_problems", 0)
@@ -709,9 +765,6 @@ def compute_live_values(db: Session, brand: Brand) -> Dict[str, dict]:
         }
 
         # ── Dispensing status (Rx vs OTC) — SAM DeliveryModus, REF-decoded ──
-        # "Free delivery" (FD/TF) = available without prescription; M*/TD = on
-        # medical prescription. Pharmacist counter cue; also gates consumer
-        # advertising (Rx medicines can't be advertised to the public in BE).
         deliv = meta.get("delivery")
         if deliv:
             status = deliv["status"]
@@ -725,9 +778,6 @@ def compute_live_values(db: Session, brand: Brand) -> Dict[str, dict]:
             }
 
         # ── Price position in the reimbursement cluster — SAM Cheapest/HeadOfTheCluster ──
-        # Belgium reimburses against a reference (cheapest) pack per cluster; how many
-        # of the brand's packs are the cheapest in their cluster is a direct pricing-
-        # competitiveness read for BM.
         pp = meta.get("pricing_position")
         if pp and pp.get("cluster_packs"):
             ct, tot = pp["cheapest_packs"], pp["cluster_packs"]
@@ -745,10 +795,6 @@ def compute_live_values(db: Session, brand: Brand) -> Dict[str, dict]:
             }
 
         # ── Generic competition — molecule's marketer count (SAM, all MAHs) ──
-        # How genericized the brand's molecule is: a sole-source molecule is on-patent
-        # / single-supplier; many marketers = an off-patent, price-competitive market.
-        # (Originator/first-to-market dates in SAM are unreliable for old molecules, so
-        # we report competition intensity, not a hard originator claim.)
         mc = meta.get("molecule_competition")
         if mc:
             n = mc["n_marketers"]
@@ -763,9 +809,6 @@ def compute_live_values(db: Session, brand: Brand) -> Dict[str, dict]:
             }
 
     # ── Manufacturer / MAH + SAM-registered portfolio (B2B / supplier brands) ──
-    # SAM gives the marketing-authorisation holder / producer and the company's
-    # registered range — the core signal for the supplier brands (PEC/PAC/NUT)
-    # that have no consumer footprint, matched via the SAM Company/Producer name.
     company = meta.get("company")
     if company:
         out["bm_manufacturer"] = {
@@ -851,7 +894,9 @@ def compute_insights(brand: Brand, live: Dict[str, dict], role: str) -> List[str
             )
 
     sent = live.get("mk_sentiment_trend") or live.get("ph_patient_sentiment")
-    if sent:
+    if sent and sent.get("value") is not None:
+        # value is None when the polar base is too thin (raw-counts mode) — no %
+        # to interpret, so skip the sentiment headline rather than crash.
         p = sent["value"]
         if p >= 90:
             out.append(f"Sentiment is overwhelmingly positive ({p}%) — perception is a strength, so reach and availability are the growth levers, not the message.")
@@ -865,12 +910,6 @@ def compute_insights(brand: Brand, live: Dict[str, dict], role: str) -> List[str
         c = rev["count"]
         base = "a large, reliable base" if c >= 1000 else "a modest base — read trends with some caution" if c >= 100 else "a thin base — treat as directional only"
         out.append(f"{_human(c)} reviews analysed: {base}.")
-
-    # NOTE: Demand-momentum and Launch-readiness are NOT restated here — they are
-    # already shown (with value + verdict) in the Brand Pulse "Launch & Demand"
-    # panel directly above this section. Echoing them in "What this means" made the
-    # same metric appear twice on the page, so the interpretation is kept to signals
-    # the panels DON'T already display (share-of-voice rank, sentiment, review base).
 
     # The honest gap: roles whose core KPIs are proprietary still run on proxies.
     if role in ("brand_manager", "pharmacist"):

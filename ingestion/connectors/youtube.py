@@ -80,7 +80,7 @@ class YouTubeConnector(BaseConnector):
                             part="snippet",
                             type="video",
                             regionCode=country,
-                            maxResults=10,
+                            maxResults=50,   # was 10 — API max per page is 50
                             relevanceLanguage=COUNTRY_LANGUAGE_MAP.get(country, ["fr"])[0],
                             order="relevance",
                         )

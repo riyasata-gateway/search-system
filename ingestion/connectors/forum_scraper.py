@@ -33,7 +33,7 @@ DISCOURSE_FORUMS: List[dict] = [
 ]
 
 _HEADERS = {"User-Agent": "PharmaWatch/1.0 (EU pharma research; +https://pharmawatch.eu/bot)"}
-_MAX_PER_FORUM_KEYWORD = 20
+_MAX_PER_FORUM_KEYWORD = 50   # was 20
 
 
 class ForumScraperConnector(BaseConnector):

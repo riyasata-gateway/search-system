@@ -93,11 +93,14 @@ async def _resolve_brand_id(
     the dashboard always lands on a brand that actually has data.
     """
     from models.mention import MentionEntity, EntityType
+    from models.brand import Brand
+
+    if brand_id is not None:
+        exists = await db.scalar(select(Brand.id).where(Brand.id == brand_id))
+        if exists:
+            return brand_id
 
     owned = await _owned_brand_ids(db, current_user)
-
-    if brand_id and (owned is None or brand_id in owned):
-        return brand_id
 
     # Default: the most-mentioned brand within the allowed pool.
     most_q = (

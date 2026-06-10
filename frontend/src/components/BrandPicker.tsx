@@ -27,6 +27,9 @@ export type PickerBrand = {
   category: string | null;
   manufacturer: string | null;
   has_data: boolean;
+  /** "consumer" = has enough first-person opinion (reviews/social) for consumer
+   *  KPIs; "catalog" = B2B/supplier or press-only — consumer panels don't apply. */
+  data_profile?: "consumer" | "catalog";
   is_medicine: boolean;
 };
 

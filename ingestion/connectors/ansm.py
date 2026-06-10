@@ -128,7 +128,7 @@ class ANSMConnector(BaseConnector):
                     "medical_domain": rec["medical_domain"],
                 },
             ))
-            if len(out) >= 10:
+            if len(out) >= 50:   # per-brand cap (was 10)
                 break
 
         logger.info("ansm_collected", count=len(out), keywords=keywords[:3])
