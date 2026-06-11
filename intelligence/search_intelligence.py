@@ -223,7 +223,9 @@ def flatten_for_db(si: SearchIntelligence) -> dict:
         "bpi_market_fit": sc.get("bpi_market_fit"),
         "bpi_confidence": sc.get("bpi_confidence"),
         "adoption_is_proxy": sc.get("adoption_is_proxy"),
-        "bpi_component_status": sc.get("bpi_component_status") or {},
+        # NB: bpi_component_status is a per-component dict, not a SearchMetric
+        # column — kept on the live API response only, never written to the audit
+        # row (passing it to SearchMetric(**metrics) raised "invalid keyword").
         "sov_percent": sc.get("sov_percent"),
         "momentum_score": sc.get("momentum_score"),
         "lifecycle_stage": sc.get("lifecycle_stage"),

@@ -65,6 +65,27 @@ export default function ExportPdfButton({
         pdf.addImage(img, "JPEG", margin, position, imgW, imgH);
         heightLeft -= printable;
       }
+
+      // Make every link in the captured region CLICKABLE: overlay an invisible
+      // jsPDF link annotation over each <a href>, mapped to the right page. The
+      // capture is a flat image, so without this the source links aren't tappable.
+      const elRect = el.getBoundingClientRect();
+      const mmPerPx = imgW / el.scrollWidth;       // image fills imgW for el's CSS width
+      el.querySelectorAll("a[href]").forEach((a) => {
+        const href = (a as HTMLAnchorElement).href;
+        if (!href || !/^https?:/i.test(href)) return;
+        const r = a.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) return;
+        const xMm = margin + (r.left - elRect.left) * mmPerPx;
+        const yInImg = (r.top - elRect.top) * mmPerPx;     // mm from image top
+        const page = Math.floor(yInImg / printable);
+        const yOnPage = margin + (yInImg - page * printable);
+        if (page >= 0 && page < pdf.getNumberOfPages()) {
+          pdf.setPage(page + 1);
+          pdf.link(xMm, yOnPage, r.width * mmPerPx, r.height * mmPerPx, { url: href });
+        }
+      });
+
       pdf.save(filename);
     } catch (e) {
       console.error("PDF export failed", e);

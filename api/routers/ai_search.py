@@ -597,6 +597,194 @@ async def deep_insights(
     )
 
 
+# ── PR24: Belgium + France product-search demographic insights ───────────────
+# Allowlists of Belgian and French regions/provinces (folded) — region insights
+# are filtered to these so the feature can NEVER surface a region outside the two
+# markets PharmaWatch tracks (Belgium primary, France secondary).
+_BELGIAN_REGIONS = {
+    "flanders", "vlaanderen", "flandre", "wallonia", "wallonie", "wallonie",
+    "brussels", "brussels-capital", "brussels capital", "bruxelles", "brussel",
+    "antwerp", "antwerpen", "anvers", "east flanders", "oost-vlaanderen", "flandre orientale",
+    "west flanders", "west-vlaanderen", "flandre occidentale", "flemish brabant",
+    "vlaams-brabant", "brabant flamand", "limburg", "limbourg", "hainaut", "henegouwen",
+    "liege", "liège", "luik", "luxembourg", "namur", "namen", "walloon brabant",
+    "brabant wallon", "waals-brabant",
+}
+
+# French metropolitan regions + major metros (folded). "luxembourg" is intentionally
+# only in the Belgian set (the province) — the country is never a region here.
+_FRENCH_REGIONS = {
+    "ile-de-france", "île-de-france", "ile de france", "paris",
+    "auvergne-rhone-alpes", "auvergne-rhône-alpes", "rhone-alpes", "rhône-alpes", "lyon",
+    "hauts-de-france", "nouvelle-aquitaine", "bordeaux",
+    "occitanie", "toulouse", "grand est", "grand-est", "strasbourg",
+    "provence-alpes-cote d'azur", "provence-alpes-côte d'azur", "paca", "marseille", "nice",
+    "pays de la loire", "pays-de-la-loire", "nantes", "normandy", "normandie",
+    "brittany", "bretagne", "rennes", "bourgogne-franche-comte", "bourgogne-franche-comté",
+    "centre-val de loire", "centre-val-de-loire", "corsica", "corse", "lille",
+}
+
+# Country tags so the UI/PDF can show which market each region belongs to.
+_FR_COUNTRY_TOKENS = ("france", "(fr)", "french")
+_BE_COUNTRY_TOKENS = ("belgium", "belgique", "belgië", "(be)", "belgian")
+
+
+def _region_country(label: str) -> Optional[str]:
+    """Classify a region label as Belgium / France, or None if it matches neither
+    allowlist. Explicit country tokens in the label win first."""
+    s = (label or "").strip().lower()
+    if any(tok in s for tok in _BE_COUNTRY_TOKENS) and not any(tok in s for tok in _FR_COUNTRY_TOKENS):
+        return "Belgium"
+    if any(tok in s for tok in _FR_COUNTRY_TOKENS):
+        return "France"
+    if any(tok in s for tok in _BELGIAN_REGIONS):
+        return "Belgium"
+    if any(tok in s for tok in _FRENCH_REGIONS):
+        return "France"
+    return None
+
+
+def _is_allowed_region(label: str) -> bool:
+    return _region_country(label) is not None
+
+
+class Pr24Item(BaseModel):
+    label: str
+    share: Optional[float] = None     # 0–100 relative interest index within the pillar
+    note: str = ""                    # one-line behavioural pattern
+
+
+class Pr24Source(BaseModel):
+    title: Optional[str] = None
+    url: Optional[str] = None
+
+
+class Pr24Pillar(BaseModel):
+    items: List[Pr24Item]
+    sources: List[Pr24Source]         # references the model relied on for this pillar
+
+
+class Pr24Response(BaseModel):
+    query: str
+    summary: str
+    gender: Pr24Pillar
+    age_group: Pr24Pillar
+    region: Pr24Pillar                # Belgian + French regions
+    model: str
+    elapsed_ms: int
+    web_search: bool
+
+
+def _pr24_prompt(lang: str, role: str) -> str:
+    language = _LANG_NAMES.get(lang, "English")
+    return f"""You are a consumer market-research analyst specialising in BELGIUM and FRANCE. For the
+user's product or category query, analyse INTERNET PRODUCT-SEARCH BEHAVIOUR across three pillars:
+GENDER, AGE GROUP, and REGION (Belgium and France only).
+
+STRICT GEOGRAPHY — non-negotiable:
+- Belgium and France ONLY. Every insight is about Belgian or French internet users searching for
+  this product/category. NEVER mention any country or region outside Belgium and France.
+- Belgian regions: the three regions (Flanders, Wallonia, Brussels-Capital) and/or Belgian
+  provinces (Antwerp, East/West Flanders, Flemish Brabant, Limburg, Hainaut, Liège, Luxembourg,
+  Namur, Walloon Brabant).
+- French regions: metropolitan regions (Île-de-France, Auvergne-Rhône-Alpes, Hauts-de-France,
+  Nouvelle-Aquitaine, Occitanie, Grand Est, Provence-Alpes-Côte d'Azur, Pays de la Loire,
+  Normandy, Brittany, Bourgogne-Franche-Comté, Centre-Val de Loire, Corsica) and/or major metros
+  (Paris, Lyon, Marseille).
+- In the REGION pillar, give a MIX across both markets — at least one Belgian and one French
+  region — and ALWAYS append the country to each region label, e.g. "Flanders (Belgium)",
+  "Île-de-France (France)".
+
+For EACH pillar, give the 2–4 segments most likely to be searching for this product/category:
+- `label`: the segment (gender "Female"/"Male"; age "25–34"; region "Flanders (Belgium)")
+- `share`: an approximate RELATIVE interest index 0–100 within that pillar (need not sum to 100)
+- `note`: ONE line on the meaningful search-behaviour pattern (what/why), market-specific
+
+EACH pillar also returns a `sources` array — the concrete references you relied on for that
+pillar (title + URL). Use web search for Belgian and French signal; NEVER fabricate a URL — omit
+a source you can't actually name. Write `summary` and every `note` in {language}.
+
+Respond ONLY with valid JSON (no markdown):
+{{
+  "summary": "one-line read of who searches for this in Belgium and France",
+  "gender":    {{"items": [{{"label": "Female", "share": 70, "note": "..."}}], "sources": [{{"title": "...", "url": "https://..."}}]}},
+  "age_group": {{"items": [{{"label": "25–34", "share": 60, "note": "..."}}], "sources": [{{"title": "...", "url": "https://..."}}]}},
+  "region":    {{"items": [{{"label": "Flanders (Belgium)", "share": 55, "note": "..."}}, {{"label": "Île-de-France (France)", "share": 50, "note": "..."}}], "sources": [{{"title": "...", "url": "https://..."}}]}}
+}}"""
+
+
+@router.get("/pr24", response_model=Pr24Response)
+async def pr24_insights(
+    q: str = Query(..., min_length=2, description="Product or category to profile for Belgium & France"),
+    lang: str = Query("en"),
+    role: Optional[str] = Query(None),
+    current_user: User = Depends(get_current_user),
+):
+    """PR24 — Belgium + France internet product-search insights for a query, grouped
+    under three pillars: gender, age group, and region (Belgian and French)."""
+    if not settings.OPENAI_API_KEY:
+        raise HTTPException(status_code=503, detail="OpenAI API key not configured.")
+    from openai import AsyncOpenAI
+
+    t0 = time.time()
+    lens = resolve_role(current_user, role)
+    lang = lang if lang in _LANG_NAMES else "en"
+    client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+
+    try:
+        raw = await _call_model(
+            client,
+            messages=[
+                {"role": "system", "content": _pr24_prompt(lang, lens)},
+                {"role": "user", "content": f'Product/category query: "{q}" — profile Belgian search behaviour.'},
+            ],
+            allow_web_search=True,
+            max_tokens=1100,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="PR24 insights timed out. Please try again.")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"AI model error: {str(exc)}")
+
+    parsed = _extract_json(raw)
+
+    def _pillar(key: str, region_only: bool = False, cap: int = 4) -> Pr24Pillar:
+        block = parsed.get(key) or {}
+        # Tolerate either the new {items, sources} shape or a bare items list.
+        raw_items = block.get("items") if isinstance(block, dict) else block
+        raw_sources = block.get("sources") if isinstance(block, dict) else []
+        items: List[Pr24Item] = []
+        for it in (raw_items or []):
+            if not isinstance(it, dict) or not it.get("label"):
+                continue
+            label = str(it["label"]).strip()[:60]
+            if region_only and not _is_allowed_region(label):
+                continue   # defensive: drop any region outside Belgium/France
+            share = it.get("share")
+            try:
+                share = max(0.0, min(100.0, float(share))) if share is not None else None
+            except (TypeError, ValueError):
+                share = None
+            items.append(Pr24Item(label=label, share=share, note=str(it.get("note") or "")[:200]))
+        sources = [
+            Pr24Source(title=(str(s.get("title")) if s.get("title") else None),
+                       url=(str(s.get("url")) if s.get("url") else None))
+            for s in (raw_sources or []) if isinstance(s, dict) and (s.get("url") or s.get("title"))
+        ][:6]
+        return Pr24Pillar(items=items[:cap], sources=sources)
+
+    return Pr24Response(
+        query=q,
+        summary=str(parsed.get("summary") or f"Belgium & France search-behaviour profile for '{q}'.")[:400],
+        gender=_pillar("gender"),
+        age_group=_pillar("age_group"),
+        region=_pillar("region", region_only=True, cap=6),
+        model=settings.OPENAI_MODEL,
+        elapsed_ms=int((time.time() - t0) * 1000),
+        web_search=bool(settings.AI_WEB_SEARCH and _WEB_SEARCH_SUPPORTED),
+    )
+
+
 @router.get("/ai", response_model=AISearchResponse)
 async def ai_search(
     background_tasks: BackgroundTasks,
