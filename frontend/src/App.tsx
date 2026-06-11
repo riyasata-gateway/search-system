@@ -2,7 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { useAuth } from "./hooks/useAuth";
 import Login from "./pages/Login";
 import PharmacistDashboard from "./pages/PharmacistDashboard";
-import LabDashboard from "./pages/LabDashboard";
+import BrandPulse from "./pages/BrandPulse";
 import BrandSetup from "./pages/BrandSetup";
 import Alerts from "./pages/Alerts";
 import AdverseEventReview from "./pages/AdverseEventReview";
@@ -40,7 +40,7 @@ export default function App() {
               user?.role === "pharmacist" ? (
                 <Navigate to="/pharmacist" replace />
               ) : user?.role === "marketing" || user?.role === "brand_manager" ? (
-                <Navigate to="/lab" replace />
+                <Navigate to="/brand-pulse" replace />
               ) : (
                 <Navigate to="/admin" replace />
               )
@@ -55,10 +55,10 @@ export default function App() {
             }
           />
           <Route
-            path="lab"
+            path="brand-pulse"
             element={
               <ProtectedRoute roles={["marketing", "brand_manager", "admin"]}>
-                <LabDashboard />
+                <BrandPulse />
               </ProtectedRoute>
             }
           />

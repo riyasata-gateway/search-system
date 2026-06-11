@@ -1,16 +1,24 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import {
-  ResponsiveContainer, RadialBarChart, RadialBar, PolarAngleAxis,
-  BarChart, Bar, XAxis, YAxis, Tooltip, Cell,
+  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Cell,
 } from "recharts";
 import {
-  Sparkles, TrendingUp, AlertTriangle, Activity, Rocket, MessagesSquare,
+  Sparkles, TrendingUp, AlertTriangle, Activity, MessagesSquare,
   RefreshCw, ChevronRight, ShieldCheck, Loader2, Users, Workflow, Info,
   CheckCircle2, XCircle, Clock,
 } from "lucide-react";
 import { apiClient } from "../api/client";
-import { useLiveStream } from "../hooks/useLiveStream";
+import InfoTip from "../components/InfoTip";
+import BrandPicker from "../components/BrandPicker";
+import { useSelectedBrand } from "../lib/selectedBrand";
+import CompetitiveMap from "../components/CompetitiveMap";
+import PressLens from "../components/PressLens";
+import CompetitorMoves from "../components/CompetitorMoves";
+import TrendingTopics from "../components/TrendingTopics";
+import ExportPdfButton from "../components/ExportPdfButton";
+import InsightPanel from "../components/InsightPanel";
+import { define } from "../lib/glossary";
 
 // ── types ────────────────────────────────────────────────────────────────────
 
@@ -28,13 +36,6 @@ interface Bundle {
   name: string;
   metrics: MetricEnvelope[];
   context: Record<string, any>;
-}
-
-interface Brand {
-  id: number;
-  name: string;
-  manufacturer?: string;
-  country?: string[];
 }
 
 interface NBAItem {
@@ -57,12 +58,6 @@ const SEVERITY_STYLE: Record<string, string> = {
   low: "text-slate-600 bg-slate-50 border-slate-200",
 };
 
-const VERDICT_STYLE: Record<string, string> = {
-  go: "bg-emerald-100 text-emerald-700 border-emerald-200",
-  monitor: "bg-amber-100 text-amber-700 border-amber-200",
-  hold: "bg-red-100 text-red-700 border-red-200",
-};
-
 const CHANNEL_ICON: Record<string, JSX.Element> = {
   paid: <TrendingUp size={12} />,
   organic: <Sparkles size={12} />,
@@ -70,6 +65,17 @@ const CHANNEL_ICON: Record<string, JSX.Element> = {
   comms: <MessagesSquare size={12} />,
   ops: <Workflow size={12} />,
 };
+
+// Human-readable labels for the engine's channel / stakeholder codes.
+const CHANNEL_LABEL: Record<string, string> = {
+  paid: "Paid media", organic: "Organic / SEO", hcp: "HCP / medical",
+  comms: "Comms & PR", ops: "Operations",
+};
+const STAKEHOLDER_LABEL: Record<string, string> = {
+  marketing: "Marketing team", brand: "Brand management", medical: "Medical affairs",
+  sales: "Sales / trade", ops: "Operations", regulatory: "Regulatory",
+};
+const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 function scoreColour(v: number) {
   if (v >= 70) return "#10b981";
@@ -84,35 +90,6 @@ function fmt(n?: number | null, d = 0) {
 
 // ── small components ─────────────────────────────────────────────────────────
 
-function InsufficientData({ note }: { note?: string }) {
-  return (
-    <div className="relative w-full h-40 flex flex-col items-center justify-center text-center px-3">
-      <span className="text-lg font-semibold text-slate-400">Insufficient data</span>
-      <span className="mt-1 text-[10px] text-slate-500 uppercase tracking-wide">
-        {note ?? "No mentions in window"}
-      </span>
-    </div>
-  );
-}
-
-function ScoreRadial({ value, label }: { value: number; label: string }) {
-  const data = [{ name: label, value, fill: scoreColour(value) }];
-  return (
-    <div className="relative w-full h-40">
-      <ResponsiveContainer>
-        <RadialBarChart innerRadius="66%" outerRadius="100%" data={data} startAngle={90} endAngle={-270}>
-          <PolarAngleAxis type="number" domain={[0, 100]} angleAxisId={0} tick={false} />
-          <RadialBar background dataKey="value" cornerRadius={10} />
-        </RadialBarChart>
-      </ResponsiveContainer>
-      <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-        <span className="text-3xl font-bold text-slate-900 tabular-nums leading-none">{value.toFixed(0)}</span>
-        <span className="mt-1 max-w-[6rem] truncate text-center text-[10px] text-slate-400 uppercase tracking-wide">{label}</span>
-      </div>
-    </div>
-  );
-}
-
 function MetricRow({ label, value, unit }: { label: string; value: number; unit?: string }) {
   return (
     <div className="flex items-baseline justify-between gap-2 py-1.5 border-b border-slate-100 last:border-0">
@@ -125,16 +102,18 @@ function MetricRow({ label, value, unit }: { label: string; value: number; unit?
 }
 
 function SectionCard({
-  icon, title, subtitle, children,
-}: { icon: JSX.Element; title: string; subtitle?: string; children: React.ReactNode }) {
+  icon, title, subtitle, info, children,
+}: { icon: JSX.Element; title: string; subtitle?: string; info?: string; children: React.ReactNode }) {
   return (
     <div className="bg-white border border-slate-200 rounded-2xl shadow-soft overflow-hidden">
-      <div className="px-5 py-3.5 border-b border-slate-100 flex items-center gap-2.5 bg-gradient-to-br from-slate-50/50 to-transparent">
+      <div className="px-5 py-3.5 border-b border-slate-100 flex items-center gap-2.5 bg-white/[0.02]">
         <span className="shrink-0 w-7 h-7 rounded-lg bg-white border border-slate-200 flex items-center justify-center shadow-soft">
           {icon}
         </span>
         <div className="flex-1 min-w-0">
-          <h3 className="text-sm font-semibold text-slate-900">{title}</h3>
+          <h3 className="text-sm font-semibold text-slate-900 flex items-center gap-1.5">
+            {title}{info && <InfoTip text={info} label={title} />}
+          </h3>
           {subtitle && <p className="text-[11px] text-slate-400">{subtitle}</p>}
         </div>
       </div>
@@ -146,43 +125,19 @@ function SectionCard({
 // ── main page ────────────────────────────────────────────────────────────────
 
 export default function BrandPotential() {
-  const [brandId, setBrandId] = useState<number | null>(null);
-  const [country, setCountry] = useState<string>("");
-
-  // 1. Brand list — populate the selector
-  const { data: brands } = useQuery<Brand[]>({
-    queryKey: ["brands-list"],
-    queryFn: () => apiClient.get("/brands/").then((r) => r.data),
-  });
-
-  // Default to top brand once loaded
-  useEffect(() => {
-    if (brandId == null && brands && brands.length > 0) {
-      setBrandId(brands[0].id);
-    }
-  }, [brands, brandId]);
+  // Brand chosen via the category picker (any of the ~2k classified brands),
+  // shared with Brand Pulse so the selection carries across pages.
+  const [selectedBrand, setSelectedBrand] = useSelectedBrand();
+  const brandId = selectedBrand?.id ?? null;
+  // Product market is Belgium; data is BE-scoped. Selector removed (it changed
+  // nothing) — region/city geo is backlog B14.
+  const country = "BE";
+  // Optimistic local state so action buttons give immediate feedback.
+  const [decided, setDecided] = useState<Record<string, string>>({});
 
   const params = useMemo(() => (country ? { country } : {}), [country]);
 
-  const { data: bpi, isFetching: bpiLoading } = useQuery<Bundle>({
-    queryKey: ["bpi", brandId, country],
-    queryFn: () => apiClient.get(`/intelligence/bpi/${brandId}`, { params }).then((r) => r.data),
-    enabled: brandId != null,
-  });
-
-  const { data: launch } = useQuery<Bundle>({
-    queryKey: ["launch-readiness", brandId, country],
-    queryFn: () => apiClient.get(`/intelligence/launch-readiness/${brandId}`, { params }).then((r) => r.data),
-    enabled: brandId != null,
-  });
-
-  const { data: momentum } = useQuery<Bundle>({
-    queryKey: ["momentum", brandId, country],
-    queryFn: () => apiClient.get(`/intelligence/momentum/brand/${brandId}`, { params }).then((r) => r.data),
-    enabled: brandId != null,
-  });
-
-  const { data: lifecycle } = useQuery<Bundle>({
+  const { data: lifecycle, isFetching: lifecycleLoading } = useQuery<Bundle>({
     queryKey: ["lifecycle", brandId, country],
     queryFn: () => apiClient.get(`/intelligence/lifecycle/brand/${brandId}`, { params }).then((r) => r.data),
     enabled: brandId != null,
@@ -206,14 +161,18 @@ export default function BrandPotential() {
     enabled: brandId != null,
   });
 
-  // Live ticker: subscribe to the mentions + signals channels so the user
-  // sees Brand Potential update in real time as the bus fires.
-  const liveMentions = useLiveStream<{ event?: string; text?: string; source_type?: string; country?: string; published_at?: string }>("mentions", { bufferSize: 8 });
-  const liveSignals = useLiveStream<{ event?: string; entity_id?: number; entity_type?: string; score?: number; direction?: string }>("signals", { bufferSize: 8 });
+  // Analysis-driven actions — generated from this brand's live KPIs (catalog),
+  // not the templated engine.
+  const { data: nba, refetch: refetchNba } = useQuery<any>({
+    queryKey: ["brand-actions", brandId],
+    queryFn: () => apiClient.get(`/catalog/brand-actions`, { params: { brand_id: brandId } }).then((r) => r.data),
+    enabled: brandId != null,
+  });
 
-  const { data: nba, refetch: refetchNba } = useQuery<Bundle>({
-    queryKey: ["nba", brandId, country],
-    queryFn: () => apiClient.get(`/intelligence/next-best-action/${brandId}`, { params }).then((r) => r.data),
+  // Brand-specific HCP target derived from the SAM ATC code.
+  const { data: hcpTarget } = useQuery<any>({
+    queryKey: ["hcp-target", brandId],
+    queryFn: () => apiClient.get("/catalog/hcp-target", { params: { brand_id: brandId } }).then((r) => r.data),
     enabled: brandId != null,
   });
 
@@ -225,22 +184,10 @@ export default function BrandPotential() {
       }),
   });
 
-  const brandName = brands?.find((b) => b.id === brandId)?.name ?? "—";
-  const bpiScore = bpi?.metrics[0]?.value ?? 0;
-  const launchScore = launch?.metrics[0]?.value ?? 0;
-  const verdict: string = launch?.context?.verdict ?? "—";
+  const brandName = selectedBrand?.name ?? "—";
+  const isMedicine = selectedBrand?.is_medicine ?? true; // default permissive until loaded
+  const noConsumer = selectedBrand != null && selectedBrand.data_profile === "catalog";
   const lifecycleStage: string = lifecycle?.context?.stage ?? "—";
-  const momentumScore = momentum?.metrics[0]?.value ?? 0;
-  // A score of 50 with no underlying mentions is the neutral fallback, not a real
-  // assessment — surface that honestly instead of a misleading precise number.
-  const bpiInsufficient = (bpi?.metrics[0]?.sample_size ?? 0) === 0;
-  const launchInsufficient = (launch?.metrics[0]?.sample_size ?? 0) === 0;
-
-  const componentBars = useMemo(() => {
-    if (!bpi) return [];
-    // skip the first metric (overall score), keep the four components
-    return bpi.metrics.slice(1).map((m) => ({ name: m.label, value: m.value }));
-  }, [bpi]);
 
   const topicBars = useMemo(() => {
     if (!keyMsg) return [];
@@ -250,13 +197,19 @@ export default function BrandPotential() {
     }));
   }, [keyMsg]);
 
-  const nbaList: NBAItem[] = nba?.context?.actions ?? [];
+  const nbaList: NBAItem[] = nba?.actions ?? [];
   const pivotList: Array<{ trigger: string; action: string; severity: string; severity_score: number; evidence: any }> =
     pivots?.context?.pivots ?? [];
 
+  const actionKey = (item: NBAItem) => `${brandId}::${item.source_module}::${item.title.slice(0, 40)}`;
+
   const handleDecision = (item: NBAItem, decision: "accepted" | "skipped" | "acted_upon" | "dismissed") => {
+    // Optimistically record the decision so the card reflects it immediately —
+    // the flywheel log is fire-and-forget and the NBA engine recomputes the same
+    // queue, so without this the buttons looked unresponsive.
+    setDecided((prev) => ({ ...prev, [actionKey(item)]: decision }));
     flywheelLog.mutate({
-      subject_id: `${brandId}::${item.source_module}::${item.title.slice(0, 40)}`,
+      subject_id: actionKey(item),
       decision,
       context: {
         brand_id: brandId,
@@ -266,14 +219,25 @@ export default function BrandPotential() {
         category: item.channel,
       },
     });
-    setTimeout(() => refetchNba(), 400);
+    // dismissed/skipped drop out of view; accepted/acted stay shown as resolved.
+    setTimeout(() => refetchNba(), 600);
+  };
+
+  const DECISION_BADGE: Record<string, string> = {
+    accepted: "bg-emerald-500/15 text-emerald-300 border-emerald-400/40",
+    acted_upon: "bg-violet-500/15 text-violet-300 border-violet-400/40",
+    skipped: "bg-white/10 text-slate-400 border-white/20",
+    dismissed: "bg-red-500/15 text-red-300 border-red-400/40",
   };
 
   return (
-    <div className="space-y-6 max-w-7xl animate-fade-up">
-      {/* Header */}
-      <div className="relative rounded-2xl overflow-hidden border border-slate-200/70 bg-white shadow-soft">
-        <div className="absolute inset-0 bg-gradient-to-br from-accent-500/10 via-transparent to-brand-500/10 pointer-events-none" />
+    <div id="brandpotential-export" className="space-y-6 max-w-7xl animate-fade-up">
+      {/* Header — no `overflow-hidden` here: it would clip the BrandPicker dropdown.
+          The gradient overlay is rounded to match instead of relying on the clip.
+          `z-30` lifts the whole header (and its dropdown) above the cards below,
+          which otherwise paint over the absolutely-positioned popover. */}
+      <div className="relative z-30 rounded-2xl border border-slate-200/70 bg-white shadow-soft">
+        <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-accent-500/10 via-transparent to-brand-500/10 pointer-events-none" />
         <div className="relative px-6 py-5 flex flex-wrap items-center gap-4">
           <div className="shrink-0 w-11 h-11 rounded-xl bg-gradient-to-br from-accent-500 to-brand-500 flex items-center justify-center shadow-elevated">
             <Sparkles size={20} className="text-white" strokeWidth={2.4} />
@@ -281,225 +245,240 @@ export default function BrandPotential() {
           <div className="flex-1 min-w-0">
             <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Brand Potential</h1>
             <p className="text-sm text-slate-500 mt-0.5">
-              Brand Potential Index, Launch Readiness, Key Messages, Pivots, and Next-Best-Actions — TDAH composite.
+              The action layer — Next-Best-Actions, message tuning, campaign pivots, lifecycle and HCP targeting.
+              <span className="text-slate-400"> See Brand Pulse for the at-a-glance scores.</span>
             </p>
           </div>
 
-          {/* Brand + country selectors */}
-          <div className="flex flex-wrap gap-2">
-            <select
-              value={brandId ?? ""}
-              onChange={(e) => setBrandId(Number(e.target.value))}
-              className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm shadow-soft focus:outline-none focus:border-accent-400"
-            >
-              {brands?.map((b) => (
-                <option key={b.id} value={b.id}>{b.name}</option>
-              ))}
-            </select>
-            <select
-              value={country}
-              onChange={(e) => setCountry(e.target.value)}
-              className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm shadow-soft focus:outline-none focus:border-accent-400"
-            >
-              <option value="">All countries</option>
-              <option value="BE">Belgium</option>
-              <option value="FR">France</option>
-              <option value="NL">Netherlands</option>
-              <option value="DE">Germany</option>
-            </select>
+          {/* Brand selector + export */}
+          <div className="flex flex-wrap items-center gap-2">
+            <BrandPicker
+              value={brandId}
+              selectedBrand={selectedBrand}
+              onSelect={(b) => setSelectedBrand(b)}
+            />
+            <ExportPdfButton
+              targetId="brandpotential-export"
+              filename={`Brand Potential — ${selectedBrand?.name ?? "brand"}.pdf`}
+            />
           </div>
         </div>
       </div>
 
-      {bpiLoading && (
+      {lifecycleLoading && brandId != null && nbaList.length === 0 && (
         <div className="flex items-center justify-center py-20 text-slate-400">
           <Loader2 className="animate-spin mr-2" size={18} /> Loading brand intelligence…
         </div>
       )}
 
-      {brandId != null && !bpiLoading && (
+      {brandId != null && noConsumer && (
+        <div className="flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4">
+          <Info size={18} className="text-amber-600 shrink-0 mt-0.5" />
+          <div className="text-sm text-slate-700">
+            <p className="font-semibold text-slate-900">
+              {brandName} is a supplier / catalogue brand — no consumer channel yet.
+            </p>
+            <p className="text-xs text-slate-600 mt-1 leading-relaxed">
+              We track it through the Belgian SAM drug-master and reference/safety feeds, but it has
+              no first-person consumer reviews or social discussion — so the consumer action layer
+              (lifecycle, message tuning, campaign pivots) doesn't apply. Its applicable metrics — SAM
+              portfolio, manufacturer, market status, pricing — are on <span className="font-semibold">Brand Pulse</span>.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {brandId != null && (
         <>
-          {/* Live stream ticker — proof that the bus is alive */}
-          {(liveMentions.events.length > 0 || liveSignals.events.length > 0) && (
-            <div className="bg-white border border-slate-200 rounded-2xl shadow-soft overflow-hidden">
-              <div className="px-4 py-2 border-b border-slate-100 flex items-center gap-2 bg-gradient-to-r from-emerald-50/50 to-transparent">
-                <span className="relative flex w-2.5 h-2.5">
-                  <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-60 animate-ping" />
-                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500" />
-                </span>
-                <p className="text-xs font-semibold text-slate-700">Live stream</p>
-                <span className="text-[10px] text-slate-400">
-                  {liveMentions.events.length} mention{liveMentions.events.length === 1 ? "" : "s"} · {liveSignals.events.length} signal{liveSignals.events.length === 1 ? "" : "s"}
-                </span>
-              </div>
-              <div className="px-4 py-2 flex gap-3 overflow-x-auto">
-                {liveSignals.events.map((s, i) => (
-                  <span key={`s-${i}`} className="shrink-0 text-[11px] inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
-                    <AlertTriangle size={11} /> {s.event} {s.entity_type}#{s.entity_id} · {s.score?.toFixed(0) ?? "—"}
-                  </span>
-                ))}
-                {liveMentions.events.map((m, i) => (
-                  <span key={`m-${i}`} className="shrink-0 text-[11px] inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-slate-50 text-slate-600 border border-slate-200 max-w-xs truncate">
-                    <Activity size={11} className="shrink-0 text-emerald-500" />
-                    <span className="font-semibold">{m.source_type ?? "src"}</span>
-                    {m.country && <span className="text-slate-400">· {m.country}</span>}
-                    <span className="truncate">{(m.text ?? "").slice(0, 80)}</span>
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
+          {/* Next-Best-Actions — the headline of the action layer */}
+          <SectionCard
+            icon={<Workflow size={14} className="text-violet-600" />}
+            title="Next-Best-Action queue"
+            subtitle="Composed across all modules · flywheel-weighted"
+            info={define("Next-Best-Action")}
+          >
+            {nbaList.length === 0 ? (
+              <p className="text-xs text-slate-400 py-6 text-center">No actions surfaced for this brand right now.</p>
+            ) : (
+              <ul className="space-y-2">
+                {nbaList.map((a, i) => {
+                  const decision = decided[actionKey(a)];
+                  const resolved = !!decision;
+                  return (
+                  <li key={i} className={`rounded-xl border border-slate-200 bg-white p-4 transition-opacity ${resolved ? "opacity-60" : ""}`}>
+                    <div className="flex items-start gap-3">
+                      <span
+                        className="shrink-0 inline-flex items-center justify-center w-9 h-9 rounded-lg text-white text-xs font-bold tabular-nums shadow-soft"
+                        style={{ backgroundColor: scoreColour(a.priority_score) }}
+                      >
+                        {a.priority_score.toFixed(0)}
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="text-sm font-semibold text-slate-900">{a.title}</p>
+                          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${SEVERITY_STYLE[a.severity]}`}>{a.severity}</span>
+                          <span className="text-[10px] text-slate-500 bg-slate-50 border border-slate-200 px-2 py-0.5 rounded-full inline-flex items-center gap-1" title="Channel where this action runs">
+                            {CHANNEL_ICON[a.channel] ?? null} {CHANNEL_LABEL[a.channel] ?? cap(a.channel)}
+                          </span>
+                          <span className="text-[10px] text-slate-500 bg-slate-50 border border-slate-200 px-2 py-0.5 rounded-full" title="Team that owns this action">
+                            Owner: {STAKEHOLDER_LABEL[a.stakeholder] ?? cap(a.stakeholder)}
+                          </span>
+                          <span className="text-[10px] text-slate-400 ml-auto inline-flex items-center gap-1">
+                            <RefreshCw size={9} /> flywheel ×{a.flywheel_multiplier.toFixed(2)}
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-600 mt-1.5 leading-relaxed">{a.rationale}</p>
+                        {resolved ? (
+                          <div className="flex items-center gap-2 mt-3">
+                            <span className={`inline-flex items-center gap-1 text-xs font-semibold px-3 py-1.5 rounded-lg border capitalize ${DECISION_BADGE[decision] ?? "bg-white/10 text-slate-300 border-white/20"}`}>
+                              <CheckCircle2 size={12} /> {decision.replace("_", " ")}
+                            </span>
+                            <button
+                              onClick={() => setDecided((prev) => { const n = { ...prev }; delete n[actionKey(a)]; return n; })}
+                              className="text-[11px] text-slate-400 hover:text-slate-200 underline"
+                            >
+                              Undo
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="flex flex-wrap items-center gap-2 mt-3">
+                            <button
+                              onClick={() => handleDecision(a, "accepted")}
+                              className="inline-flex items-center gap-1 text-xs font-semibold px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white shadow-soft"
+                            >
+                              <CheckCircle2 size={12} /> Accept
+                            </button>
+                            <button
+                              onClick={() => handleDecision(a, "acted_upon")}
+                              className="inline-flex items-center gap-1 text-xs font-semibold px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-700 text-white shadow-soft"
+                            >
+                              <ShieldCheck size={12} /> Mark as acted
+                            </button>
+                            <button
+                              onClick={() => handleDecision(a, "skipped")}
+                              className="inline-flex items-center gap-1 text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50"
+                            >
+                              <Clock size={12} /> Skip
+                            </button>
+                            <button
+                              onClick={() => handleDecision(a, "dismissed")}
+                              className="inline-flex items-center gap-1 text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50"
+                            >
+                              <XCircle size={12} /> Dismiss
+                            </button>
+                            <span className="text-[10px] text-slate-400 ml-1 inline-flex items-center gap-1">
+                              <ChevronRight size={10} /> {a.source_module}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </li>
+                  );
+                })}
+              </ul>
+            )}
+            {flywheelLog.isPending && (
+              <p className="text-[11px] text-slate-400 mt-3 inline-flex items-center gap-1">
+                <Loader2 size={11} className="animate-spin" /> Logging action to flywheel…
+              </p>
+            )}
+          </SectionCard>
 
-          {/* Top row — BPI + Launch Readiness + Momentum + Lifecycle */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            <SectionCard icon={<Sparkles size={14} className="text-accent-600" />} title="BPI" subtitle="Awareness × Adoption × Sentiment × Fit">
-              {bpiInsufficient ? (
-                <InsufficientData />
-              ) : (
-                <>
-                  <ScoreRadial value={bpiScore} label="BPI" />
-                  <div className="mt-3 space-y-0.5">
-                    {bpi?.metrics.slice(1).map((m) => (
-                      <MetricRow key={m.label} label={m.label} value={m.value} unit={m.unit?.replace("0–100", "") ?? "%"} />
-                    ))}
-                  </div>
-                </>
-              )}
-            </SectionCard>
+          {/* C-bucket — semantic insight (RAG). Shown for all brands: catalog
+              medicines still have an evidence lens even with no consumer channel. */}
+          <InsightPanel brandId={brandId} />
 
-            <SectionCard icon={<Rocket size={14} className="text-brand-600" />} title="Launch Readiness" subtitle="Composite of Phase 1 outputs">
-              {launchInsufficient ? (
-                <InsufficientData note="No recent mentions" />
-              ) : (
-                <>
-                  <ScoreRadial value={launchScore} label={verdict.toUpperCase()} />
-                  <div className="mt-3">
-                    <span className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${VERDICT_STYLE[verdict] ?? "bg-slate-50 text-slate-500 border-slate-200"}`}>
-                      Verdict: {verdict}
-                    </span>
-                  </div>
-                  <div className="mt-3 space-y-0.5">
-                    {launch?.metrics.slice(1).map((m) => (
-                      <MetricRow key={m.label} label={m.label} value={m.value} unit="" />
-                    ))}
-                  </div>
-                </>
-              )}
-            </SectionCard>
-
-            <SectionCard icon={<TrendingUp size={14} className="text-emerald-600" />} title="Momentum" subtitle="Velocity + acceleration">
-              <ScoreRadial value={momentumScore} label="Momentum" />
-              <div className="mt-3 space-y-0.5">
-                {momentum?.metrics.slice(1).map((m) => (
-                  <MetricRow key={m.label} label={m.label} value={m.value} unit={m.unit ?? "%"} />
-                ))}
-              </div>
-            </SectionCard>
-
-            <SectionCard icon={<Activity size={14} className="text-violet-600" />} title="Lifecycle" subtitle="Stage classification">
-              <div className="relative h-40 flex flex-col items-center justify-center">
+          {/* Lifecycle + Key message tuning — consumer-signal panels, hidden for
+              supplier/catalogue brands that have no consumer channel. */}
+          {!noConsumer && (
+          <>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <SectionCard icon={<Activity size={14} className="text-violet-600" />} title="Lifecycle" subtitle="Stage classification" info={define("Lifecycle")}>
+              <div className="relative h-32 flex flex-col items-center justify-center">
                 <span className="text-2xl font-bold text-slate-900 capitalize">{lifecycleStage.replace("_", " ")}</span>
                 <span className="text-[10px] text-slate-400 uppercase tracking-wider mt-1">
                   velocity {fmt(lifecycle?.context?.velocity_pct, 1)}%
                 </span>
               </div>
               <div className="mt-3 space-y-0.5">
-                <MetricRow label="Total mentions" value={lifecycle?.context?.sample_size ?? lifecycle?.metrics[1]?.value ?? 0} />
+                <MetricRow label="Total mentions" value={lifecycle?.context?.sample_size ?? lifecycle?.metrics?.[1]?.value ?? 0} />
                 <MetricRow label="Positive share" value={(lifecycle?.context?.positive_share ?? 0) * 100} unit="%" />
-                <MetricRow label="Confidence" value={(lifecycle?.metrics[0]?.confidence ?? 0) * 100} unit="%" />
+                <MetricRow label="Confidence" value={(lifecycle?.metrics?.[0]?.confidence ?? 0) * 100} unit="%" />
               </div>
             </SectionCard>
+
+            <div className="lg:col-span-2">
+              <SectionCard
+                icon={<MessagesSquare size={14} className="text-indigo-600" />}
+                title="Key Message Tuning"
+                subtitle="Engagement-weighted resonance per topic. 50% baseline = neutral."
+                info={define("Key Message Tuning")}
+              >
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                  <div className="lg:col-span-2 h-44">
+                    {topicBars.length === 0 ? (
+                      <p className="text-xs text-slate-400 h-full flex items-center justify-center">Not enough classified mentions to compute resonance.</p>
+                    ) : (
+                      <ResponsiveContainer>
+                        <BarChart data={topicBars} layout="vertical" margin={{ top: 0, right: 10, left: 4, bottom: 0 }}>
+                          <XAxis type="number" domain={[0, 100]} hide />
+                          <YAxis dataKey="name" type="category" tick={{ fontSize: 10, fill: "#475569" }} axisLine={false} tickLine={false} width={80} />
+                          <Tooltip
+                            contentStyle={{ fontSize: 11, padding: "6px 10px", borderRadius: 8, border: "1px solid #e2e8f0" }}
+                            formatter={(v: number) => [`${v.toFixed(1)}%`, "Resonance"]}
+                          />
+                          <Bar dataKey="value" radius={[0, 4, 4, 0]} barSize={12}>
+                            {topicBars.map((d, i) => (
+                              <Cell key={i} fill={scoreColour(d.value)} />
+                            ))}
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    <div>
+                      <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Winning</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {(keyMsg?.context?.winning ?? []).length === 0
+                          ? <span className="text-xs text-slate-400">—</span>
+                          : (keyMsg?.context?.winning ?? []).map((t: string) => (
+                              <span key={t} className="text-xs px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">{t}</span>
+                            ))
+                        }
+                      </div>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Losing</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {(keyMsg?.context?.losing ?? []).length === 0
+                          ? <span className="text-xs text-slate-400">—</span>
+                          : (keyMsg?.context?.losing ?? []).map((t: string) => (
+                              <span key={t} className="text-xs px-2 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-200">{t}</span>
+                            ))
+                        }
+                      </div>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Underexposed</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {(keyMsg?.context?.underexposed ?? []).length === 0
+                          ? <span className="text-xs text-slate-400">—</span>
+                          : (keyMsg?.context?.underexposed ?? []).map((t: string) => (
+                              <span key={t} className="text-xs px-2 py-0.5 rounded-full bg-slate-50 text-slate-600 border border-slate-200">{t}</span>
+                            ))
+                        }
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </SectionCard>
+            </div>
           </div>
 
-          {/* BPI components bar — extra detail */}
-          <SectionCard icon={<Sparkles size={14} className="text-accent-600" />} title="BPI components" subtitle="Each component contributes equally to the geometric mean">
-            <div className="h-44">
-              <ResponsiveContainer>
-                <BarChart data={componentBars} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
-                  <XAxis dataKey="name" tick={{ fontSize: 10, fill: "#475569" }} axisLine={false} tickLine={false} />
-                  <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: "#94a3b8" }} axisLine={false} tickLine={false} />
-                  <Tooltip
-                    contentStyle={{ fontSize: 11, padding: "6px 10px", borderRadius: 8, border: "1px solid #e2e8f0", boxShadow: "0 4px 12px rgba(15,23,42,0.08)" }}
-                    formatter={(v: number) => [`${v.toFixed(1)}%`, ""]}
-                  />
-                  <Bar dataKey="value" radius={[4, 4, 0, 0]}>
-                    {componentBars.map((d, i) => (
-                      <Cell key={i} fill={scoreColour(d.value)} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </SectionCard>
-
-          {/* Key message tuning */}
-          <SectionCard
-            icon={<MessagesSquare size={14} className="text-indigo-600" />}
-            title="Key Message Tuning"
-            subtitle="Engagement-weighted resonance per topic. 50% baseline = neutral."
-          >
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-              <div className="lg:col-span-2 h-44">
-                {topicBars.length === 0 ? (
-                  <p className="text-xs text-slate-400 h-full flex items-center justify-center">Not enough classified mentions to compute resonance.</p>
-                ) : (
-                  <ResponsiveContainer>
-                    <BarChart data={topicBars} layout="vertical" margin={{ top: 0, right: 10, left: 4, bottom: 0 }}>
-                      <XAxis type="number" domain={[0, 100]} hide />
-                      <YAxis dataKey="name" type="category" tick={{ fontSize: 10, fill: "#475569" }} axisLine={false} tickLine={false} width={80} />
-                      <Tooltip
-                        contentStyle={{ fontSize: 11, padding: "6px 10px", borderRadius: 8, border: "1px solid #e2e8f0" }}
-                        formatter={(v: number) => [`${v.toFixed(1)}%`, "Resonance"]}
-                      />
-                      <Bar dataKey="value" radius={[0, 4, 4, 0]} barSize={12}>
-                        {topicBars.map((d, i) => (
-                          <Cell key={i} fill={scoreColour(d.value)} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                )}
-              </div>
-              <div className="space-y-2">
-                <div>
-                  <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Winning</p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {(keyMsg?.context?.winning ?? []).length === 0
-                      ? <span className="text-xs text-slate-400">—</span>
-                      : (keyMsg?.context?.winning ?? []).map((t: string) => (
-                          <span key={t} className="text-xs px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">{t}</span>
-                        ))
-                    }
-                  </div>
-                </div>
-                <div>
-                  <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Losing</p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {(keyMsg?.context?.losing ?? []).length === 0
-                      ? <span className="text-xs text-slate-400">—</span>
-                      : (keyMsg?.context?.losing ?? []).map((t: string) => (
-                          <span key={t} className="text-xs px-2 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-200">{t}</span>
-                        ))
-                    }
-                  </div>
-                </div>
-                <div>
-                  <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Underexposed</p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {(keyMsg?.context?.underexposed ?? []).length === 0
-                      ? <span className="text-xs text-slate-400">—</span>
-                      : (keyMsg?.context?.underexposed ?? []).map((t: string) => (
-                          <span key={t} className="text-xs px-2 py-0.5 rounded-full bg-slate-50 text-slate-600 border border-slate-200">{t}</span>
-                        ))
-                    }
-                  </div>
-                </div>
-              </div>
-            </div>
-          </SectionCard>
-
           {/* Campaign pivots */}
-          <SectionCard icon={<AlertTriangle size={14} className="text-amber-600" />} title="Campaign Pivots" subtitle="Signal-triggered creative / spend changes">
+          <SectionCard icon={<AlertTriangle size={14} className="text-amber-600" />} title="Campaign Pivots" subtitle="Signal-triggered creative / spend changes" info={define("Campaign Pivots")}>
             {pivotList.length === 0 ? (
               <p className="text-xs text-slate-400 py-6 text-center">No pivots triggered — current signal is stable.</p>
             ) : (
@@ -520,11 +499,39 @@ export default function BrandPotential() {
             )}
           </SectionCard>
 
-          {/* HCP Targeting (graceful no-data) */}
+          {/* B11 map + B10 competitor moves + B9 trending + B16 press */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <CompetitiveMap brandId={brandId} />
+            <CompetitorMoves brandId={brandId} />
+            <TrendingTopics brandId={brandId} />
+            <PressLens brandId={brandId} />
+          </div>
+          </>
+          )}
+
+          {/* HCP Targeting — prescription-medicine concept only; hidden for parapharmacy */}
+          {!isMedicine ? (
+            <SectionCard
+              icon={<Users size={14} className="text-slate-500" />}
+              title="HCP Targeting"
+              subtitle="Prescriber outreach"
+              info={define("HCP Targeting")}
+            >
+              <div className="flex items-start gap-3 bg-white/[0.03] border border-dashed border-white/15 rounded-xl p-4">
+                <Info size={16} className="text-slate-500 shrink-0 mt-0.5" />
+                <p className="text-xs text-slate-400">
+                  Not applicable — <span className="text-slate-200">{brandName}</span> is a parapharmacy/cosmetic
+                  product (per the Belgian SAM register), so there are no prescribers to target. HCP targeting
+                  applies to prescription medicines.
+                </p>
+              </div>
+            </SectionCard>
+          ) : (
           <SectionCard
             icon={<Users size={14} className="text-sky-600" />}
             title="HCP Targeting"
             subtitle="Prescriber momentum — requires KOL / Rx data source"
+            info={define("HCP Targeting")}
           >
             {hcp?.context?.status === "available" && (hcp.context.targets?.length ?? 0) > 0 ? (
               <ul className="space-y-2">
@@ -535,12 +542,26 @@ export default function BrandPotential() {
                       <p className="text-sm font-semibold text-slate-900">{t.name}</p>
                       <p className="text-xs text-slate-500">{t.specialty} · {t.region}</p>
                     </div>
-                    <span className="text-xs font-semibold text-sky-700 bg-sky-50 px-2.5 py-1 rounded-full border border-sky-200">
+                    <span className="text-xs font-semibold text-sky-300 bg-sky-500/15 px-2.5 py-1 rounded-full border border-sky-400/30">
                       momentum {t.prescriber_momentum.toFixed(0)}
                     </span>
                   </li>
                 ))}
               </ul>
+            ) : hcpTarget?.target ? (
+              <div className="rounded-xl border border-sky-400/30 bg-sky-500/[0.08] p-4">
+                <p className="text-sm text-slate-200">
+                  Target group: <span className="font-semibold text-sky-300">{hcpTarget.target.specialty}</span>
+                </p>
+                <p className="text-xs text-slate-300 mt-1">
+                  Derived from the brand's active substance{hcpTarget.target.substance ? ` (${hcpTarget.target.substance})` : ""} —
+                  ATC <span className="font-mono">{hcpTarget.target.atc}</span>
+                  {hcpTarget.target.atc_desc ? ` · ${hcpTarget.target.atc_desc}` : ""}, from the Belgian SAM register.
+                </p>
+                <p className="text-[11px] text-slate-400 mt-2">
+                  Connect <span className="text-slate-200">{hcpTarget.register}</span> to pull the named prescriber list for this specialty.
+                </p>
+              </div>
             ) : (
               <div className="flex items-start gap-3 bg-slate-50 border border-slate-200 rounded-xl p-4">
                 <Info size={16} className="text-slate-500 shrink-0 mt-0.5" />
@@ -553,80 +574,7 @@ export default function BrandPotential() {
               </div>
             )}
           </SectionCard>
-
-          {/* Next-Best-Actions */}
-          <SectionCard
-            icon={<Workflow size={14} className="text-violet-600" />}
-            title="Next-Best-Action queue"
-            subtitle="Composed across all modules · flywheel-weighted"
-          >
-            {nbaList.length === 0 ? (
-              <p className="text-xs text-slate-400 py-6 text-center">No actions surfaced for this brand right now.</p>
-            ) : (
-              <ul className="space-y-2">
-                {nbaList.map((a, i) => (
-                  <li key={i} className="rounded-xl border border-slate-200 bg-white p-4">
-                    <div className="flex items-start gap-3">
-                      <span
-                        className="shrink-0 inline-flex items-center justify-center w-9 h-9 rounded-lg text-white text-xs font-bold tabular-nums shadow-soft"
-                        style={{ backgroundColor: scoreColour(a.priority_score) }}
-                      >
-                        {a.priority_score.toFixed(0)}
-                      </span>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <p className="text-sm font-semibold text-slate-900">{a.title}</p>
-                          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${SEVERITY_STYLE[a.severity]}`}>{a.severity}</span>
-                          <span className="text-[10px] text-slate-500 bg-slate-50 border border-slate-200 px-2 py-0.5 rounded-full inline-flex items-center gap-1">
-                            {CHANNEL_ICON[a.channel] ?? null} {a.channel}
-                          </span>
-                          <span className="text-[10px] text-slate-500 bg-slate-50 border border-slate-200 px-2 py-0.5 rounded-full">{a.stakeholder}</span>
-                          <span className="text-[10px] text-slate-400 ml-auto inline-flex items-center gap-1">
-                            <RefreshCw size={9} /> flywheel ×{a.flywheel_multiplier.toFixed(2)}
-                          </span>
-                        </div>
-                        <p className="text-xs text-slate-600 mt-1.5 leading-relaxed">{a.rationale}</p>
-                        <div className="flex flex-wrap items-center gap-2 mt-3">
-                          <button
-                            onClick={() => handleDecision(a, "accepted")}
-                            className="inline-flex items-center gap-1 text-xs font-semibold px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white shadow-soft"
-                          >
-                            <CheckCircle2 size={12} /> Accept
-                          </button>
-                          <button
-                            onClick={() => handleDecision(a, "acted_upon")}
-                            className="inline-flex items-center gap-1 text-xs font-semibold px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-700 text-white shadow-soft"
-                          >
-                            <ShieldCheck size={12} /> Mark as acted
-                          </button>
-                          <button
-                            onClick={() => handleDecision(a, "skipped")}
-                            className="inline-flex items-center gap-1 text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50"
-                          >
-                            <Clock size={12} /> Skip
-                          </button>
-                          <button
-                            onClick={() => handleDecision(a, "dismissed")}
-                            className="inline-flex items-center gap-1 text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50"
-                          >
-                            <XCircle size={12} /> Dismiss
-                          </button>
-                          <span className="text-[10px] text-slate-400 ml-1 inline-flex items-center gap-1">
-                            <ChevronRight size={10} /> {a.source_module}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-            {flywheelLog.isPending && (
-              <p className="text-[11px] text-slate-400 mt-3 inline-flex items-center gap-1">
-                <Loader2 size={11} className="animate-spin" /> Logging action to flywheel…
-              </p>
-            )}
-          </SectionCard>
+          )}
         </>
       )}
     </div>

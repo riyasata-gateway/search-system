@@ -30,6 +30,10 @@ from models.mention import Mention, MentionEntity
 
 logger = get_logger(__name__)
 
+# Minimum non-zero days in the baseline before a z-score is trustworthy — an
+# explicit min-observations gate replacing the old magic `std < 0.5` cutoff.
+_MIN_ACTIVE_DAYS = 3
+
 
 @dataclass
 class AnomalyResult:
@@ -73,6 +77,7 @@ def _daily_counts(
     country: Optional[str] = None,
 ) -> List[int]:
     """Return one count per day in [start, end], zero-filling missing days."""
+    from core.source_taxonomy import DEMAND_SOURCE_TYPES
     day_col = func.date(Mention.published_at).label("d")
     q = (
         select(day_col, func.count(Mention.id).label("c"))
@@ -83,6 +88,9 @@ def _daily_counts(
             Mention.published_at >= start,
             Mention.published_at < end,
             Mention.is_deleted.is_(False),
+            # Anomaly detection reads CONSUMER activity only — a literature/
+            # reference ingest must not register as a demand spike/drop.
+            Mention.source_type.in_(DEMAND_SOURCE_TYPES),
         )
         .group_by(day_col)
     )
@@ -99,11 +107,15 @@ def _daily_counts(
 
 
 def _mean_std(values: List[int]) -> tuple[float, float]:
-    if not values:
-        return 0.0, 0.0
+    """Mean + SAMPLE standard deviation (÷ n-1). Population variance (÷ n) biased
+    σ low on a short daily series, inflating z-scores."""
     n = len(values)
+    if n == 0:
+        return 0.0, 0.0
     mean = sum(values) / n
-    var = sum((v - mean) ** 2 for v in values) / n
+    if n < 2:
+        return mean, 0.0
+    var = sum((v - mean) ** 2 for v in values) / (n - 1)
     return mean, math.sqrt(var)
 
 
@@ -128,7 +140,11 @@ def detect_anomaly(
     )[0] if True else 0
 
     mean, std = _mean_std(baseline_series)
-    if std < 0.5:  # near-flat baseline — z-score blows up; treat as no anomaly
+    # A trustworthy z needs a real baseline DISTRIBUTION: non-zero spread AND
+    # enough active days. The old magic `std < 0.5` cutoff both masked real
+    # low-volume signal and let a single historical spike enable false positives.
+    active_days = sum(1 for v in baseline_series if v > 0)
+    if std <= 0.0 or active_days < _MIN_ACTIVE_DAYS:
         z = 0.0
     else:
         z = (today_count - mean) / std

@@ -167,8 +167,10 @@ def compute_key_messages(
         topics.append(tr)
     topics.sort(key=lambda t: t.resonance, reverse=True)
 
-    winning = [t.topic for t in topics if t.bucket == "winning"]
-    losing = [t.topic for t in topics if t.bucket == "losing"]
+    # "general" is the catch-all topic, not an actionable message theme — exclude
+    # it from winning/losing so resonance shows real themes (efficacy, price, …).
+    winning = [t.topic for t in topics if t.bucket == "winning" and t.topic != "general"]
+    losing = [t.topic for t in topics if t.bucket == "losing" and t.topic != "general"]
     underexposed = [t.topic for t in topics if t.bucket == "underexposed"]
 
     result = KeyMessageResult(

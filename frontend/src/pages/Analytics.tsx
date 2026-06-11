@@ -149,11 +149,14 @@ interface TriageItem {
   language: string | null; published_at: string | null; is_adverse_event: boolean;
 }
 interface LangSentiment { language: string; positive: number; neutral: number; negative: number; }
+interface TopicSentiment {
+  topic: string; positive: number; neutral: number; negative: number; total: number; pos_pct: number | null;
+}
 interface ReviewData {
   scope: string; scope_label: string; lens: string; period: string; generated_at: string;
   sections: string[]; kpis: KpiCardModel[];
   sentiment: Slice[]; timeline: ReviewTimelinePoint[]; sources: Slice[]; languages: Slice[];
-  brands: BrandRow[]; topics: Slice[]; products: ProductRow[]; triage: TriageItem[];
+  brands: BrandRow[]; topics: Slice[]; topic_sentiment: TopicSentiment[]; products: ProductRow[]; triage: TriageItem[];
   lang_sentiment: LangSentiment[];
   total_reviews: number; avg_rating: number; enriched_reviews: number; embedded_reviews: number;
 }
@@ -345,7 +348,7 @@ function BrandTable({ rows }: { rows: BrandRow[] }) {
             <Th k="sov_percent" label="SoV" right />
             <Th k="avg_rating" label="Avg ★" right />
             <th className="py-2 font-medium">Sentiment</th>
-            <th className="py-2 font-medium text-right">Momentum</th>
+            <th className="py-2 font-medium text-right">Demand momentum</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-50">
@@ -428,6 +431,33 @@ function ReviewsPanel({ data }: { data: ReviewData }) {
           </h3>
           <BrandTable rows={data.brands} />
         </div>
+      )}
+
+      {/* B1 — sentiment by category: which themes drive positive vs negative */}
+      {has("topic_sentiment") && data.topic_sentiment.length > 0 && (
+        <ChartCard title="Sentiment by category — what drives perception" icon={Tag} empty={data.topic_sentiment.length === 0}>
+          <div className="space-y-3">
+            {data.topic_sentiment.map((t) => {
+              const tot = t.total || 1;
+              const pp = (t.positive / tot) * 100, np = (t.neutral / tot) * 100, ng = (t.negative / tot) * 100;
+              return (
+                <div key={t.topic}>
+                  <div className="flex items-center justify-between text-xs mb-1">
+                    <span className="font-medium text-slate-700 capitalize">{t.topic.replace(/_/g, " ")}</span>
+                    <span className="text-slate-400 tabular-nums">
+                      {t.pos_pct == null ? "—" : `${t.pos_pct}% positive`} · {t.total.toLocaleString()} opinions
+                    </span>
+                  </div>
+                  <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-slate-100" title={`${t.positive} positive · ${t.neutral} neutral · ${t.negative} negative`}>
+                    <span className="h-full bg-emerald-500" style={{ width: `${pp}%` }} />
+                    <span className="h-full bg-slate-300" style={{ width: `${np}%` }} />
+                    <span className="h-full bg-red-500" style={{ width: `${ng}%` }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </ChartCard>
       )}
 
       {/* topics (when sources block already used the right column) */}

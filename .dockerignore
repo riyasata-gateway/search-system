@@ -6,8 +6,8 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-frontend/node_modules/
-frontend/dist/
+# Frontend is built & deployed separately (Vite SPA) — not served by this image
+frontend/
 .env
 .git/
 .gitignore
@@ -15,6 +15,17 @@ tests/
 *.md
 data/
 celerybeat-schedule
+summary
 .idea/
 .vscode/
+.claude/
 *.log
+logs/
+# Data dumps, generated reports & scratch — must never bloat the backend image
+*.xlsx
+*.zip
+*.pdf
+*.docx
+*.png
+*.jpg
+*.jpeg

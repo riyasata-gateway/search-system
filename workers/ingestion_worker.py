@@ -19,20 +19,14 @@ def run_all_ingestion(self, search_topic_id: int = None):
         return {"status": "blocked"}
 
     from ingestion.tasks import (
-        collect_google_trends,
-        collect_reddit,
         collect_rss_news,
         collect_forums,
         collect_youtube,
     )
 
     results = {}
-    results["google_trends"] = collect_google_trends.delay(search_topic_id=search_topic_id).id
     results["rss_news"] = collect_rss_news.delay(search_topic_id=search_topic_id).id
     results["forums"] = collect_forums.delay(search_topic_id=search_topic_id).id
-
-    if settings.REDDIT_CLIENT_ID:
-        results["reddit"] = collect_reddit.delay(search_topic_id=search_topic_id).id
 
     if settings.YOUTUBE_API_KEY:
         results["youtube"] = collect_youtube.delay(search_topic_id=search_topic_id).id

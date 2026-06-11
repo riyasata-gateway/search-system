@@ -86,35 +86,58 @@ async def subscribe_events(
     Yields `None` every `heartbeat_seconds` if no messages arrive — useful for
     SSE keep-alive comments that prevent proxies from closing the connection.
     Otherwise yields the decoded JSON dict.
+
+    Resilient to Redis being unavailable: rather than raising (which ends the SSE
+    generator and makes the browser EventSource reconnect-storm — one logged
+    warning every few seconds), it degrades to keep-alive-only, retries the
+    connection each heartbeat, and logs the outage just ONCE per episode.
     """
-    client = await get_redis()
-    pubsub = client.pubsub()
-    await pubsub.subscribe(channel)
-    try:
-        while True:
-            try:
-                msg = await asyncio.wait_for(
-                    pubsub.get_message(ignore_subscribe_messages=True),
-                    timeout=heartbeat_seconds,
-                )
-            except asyncio.TimeoutError:
-                yield None
-                continue
-            if msg is None:
-                yield None
-                continue
-            data = msg.get("data")
-            if not data:
-                continue
-            try:
-                yield json.loads(data)
-            except (TypeError, json.JSONDecodeError):
-                # Bad payload — log but keep stream alive
-                logger.warning("event_decode_failed", channel=channel)
-                continue
-    finally:
+    warned = False
+    while True:
+        pubsub = None
         try:
-            await pubsub.unsubscribe(channel)
-            await pubsub.aclose()
-        except Exception:
-            pass
+            client = await get_redis()
+            pubsub = client.pubsub()
+            await pubsub.subscribe(channel)
+            if warned:
+                logger.info("event_bus_recovered", channel=channel)
+                warned = False
+            while True:
+                try:
+                    msg = await asyncio.wait_for(
+                        pubsub.get_message(ignore_subscribe_messages=True),
+                        timeout=heartbeat_seconds,
+                    )
+                except asyncio.TimeoutError:
+                    yield None
+                    continue
+                if msg is None:
+                    yield None
+                    continue
+                data = msg.get("data")
+                if not data:
+                    continue
+                try:
+                    yield json.loads(data)
+                except (TypeError, json.JSONDecodeError):
+                    # Bad payload — log but keep stream alive
+                    logger.warning("event_decode_failed", channel=channel)
+                    continue
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Redis unreachable or the connection dropped. Keep the SSE connection
+            # OPEN (yield a keep-alive) and retry on the next heartbeat instead of
+            # propagating — so the client isn't forced into a reconnect loop. Log
+            # only the first failure of an outage to avoid flooding the logs.
+            if not warned:
+                logger.warning("event_bus_unavailable", channel=channel, error=str(exc))
+                warned = True
+            yield None
+            await asyncio.sleep(heartbeat_seconds)
+        finally:
+            if pubsub is not None:
+                try:
+                    await pubsub.aclose()
+                except Exception:
+                    pass

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   PieChart, Pie, Cell, ResponsiveContainer, Tooltip,
   AreaChart, Area, XAxis, YAxis,
@@ -8,14 +8,26 @@ import {
 } from "recharts";
 import { apiClient } from "../api/client";
 import { useI18n } from "../i18n";
+import { useAuth } from "../hooks/useAuth";
+import { exportAiModePdf } from "../lib/aiPdf";
 import {
   Search as SearchIcon, AlertTriangle, ExternalLink, Filter,
   Loader2, Globe, Rss, Clock, Sparkles,
   CheckCircle2, Info, Languages, ShieldAlert, History, Command,
   Stethoscope, Shield, Eye, ThumbsUp, MessageSquare, Youtube, PlayCircle,
-  Megaphone, Briefcase,
+  Megaphone, Briefcase, Radar, Users, Cake, MapPin, FileDown,
   type LucideIcon,
 } from "lucide-react";
+
+// Deep-Insights topic categories → colour chip.
+const INSIGHT_CAT: Record<string, string> = {
+  regulatory: "bg-indigo-500/15 text-indigo-300 border-indigo-400/30",
+  safety: "bg-rose-500/15 text-rose-300 border-rose-400/30",
+  supply: "bg-amber-500/15 text-amber-300 border-amber-400/30",
+  market: "bg-sky-500/15 text-sky-300 border-sky-400/30",
+  clinical: "bg-violet-500/15 text-violet-300 border-violet-400/30",
+  other: "bg-white/10 text-slate-300 border-white/15",
+};
 
 // ── constants ────────────────────────────────────────────────────────────────
 
@@ -473,64 +485,6 @@ function SentimentByTopic({ rows }: { rows: CrossRow[] }) {
 }
 
 // Role-aware metrics dashboard — auto-filled from server-computed `metrics`.
-// Format a DIA MetricValue for display (score 0–100, percent, abs count).
-function fmtMetric(m: MetricValue): string {
-  if (m.kind === "percent") return `${m.value.toFixed(0)}%`;
-  if (m.kind === "score") return m.value.toFixed(0);
-  return m.value.toLocaleString("en-GB");
-}
-
-const FW_LABEL: Record<string, string> = {
-  bpi: "Brand Potential Index",
-  momentum: "Momentum",
-  lifecycle: "Lifecycle",
-  launch_readiness: "Launch readiness",
-};
-
-// DIA framework tier — corpus-based brand intelligence (BPI/SoV/momentum/…).
-function FrameworkPanel({ framework, brandName }: { framework: FrameworkMetrics; brandName: string }) {
-  const order = ["bpi", "momentum", "lifecycle", "launch_readiness"];
-  const bundles = order.filter((k) => framework.bundles[k]).map((k) => [k, framework.bundles[k]] as const);
-  if (!bundles.length) return null;
-  return (
-    <div className="rounded-xl border border-violet-200 bg-gradient-to-br from-violet-500/10 to-transparent p-3.5 shadow-soft">
-      <p className="text-[11px] font-semibold uppercase tracking-wider text-violet-700 mb-2.5 flex items-center gap-1.5">
-        <Briefcase size={12} /> DIA brand intelligence · <span className="text-violet-900">{brandName}</span>
-        <span className="ml-1 normal-case text-[10px] text-violet-400 font-normal">corpus-based · the searched brand</span>
-      </p>
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-        {bundles.map(([key, b]) => {
-          const head = b.metrics[0];
-          const rest = b.metrics.slice(1);
-          return (
-            <div key={key} className="rounded-lg border border-slate-200 bg-white p-3 shadow-soft">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">{FW_LABEL[key] ?? b.name}</p>
-              {head && (
-                <p className="text-2xl font-bold tabular-nums text-violet-700 leading-none mt-1">
-                  {fmtMetric(head)}
-                  {head.confidence != null && (
-                    <span className="ml-1.5 text-[10px] font-normal text-slate-400 align-middle">conf {(head.confidence * 100).toFixed(0)}%</span>
-                  )}
-                </p>
-              )}
-              {rest.length > 0 && (
-                <div className="mt-2 space-y-1">
-                  {rest.map((m) => (
-                    <div key={m.label} className="flex items-center justify-between gap-2 text-[11px]">
-                      <span className="text-slate-500 truncate">{m.label}</span>
-                      <span className="tabular-nums font-medium text-slate-700">{fmtMetric(m)}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
 function InsightPanel({ intel }: { intel: SearchIntelligence }) {
   const metrics = intel.snapshot;
   const sentimentData = metrics.sentiment_mix.map((s) => ({ name: s.label, value: s.count, key: s.label }));
@@ -543,15 +497,11 @@ function InsightPanel({ intel }: { intel: SearchIntelligence }) {
 
   return (
     <div className="space-y-3">
-      {/* Headline KPI row — combines DIA framework (for resolved brand) + snapshot */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
-        {intel.headline.map((k) => <MetricKpi key={k.key} k={k} />)}
+        {intel.headline
+          .filter((k) => !["bpi", "sov", "momentum", "launch"].includes(k.key))
+          .map((k) => <MetricKpi key={k.key} k={k} />)}
       </div>
-
-      {/* DIA framework tier — only when the query resolved to a known brand */}
-      {intel.brand_resolved && intel.framework && (
-        <FrameworkPanel framework={intel.framework} brandName={intel.brand_name ?? "brand"} />
-      )}
 
       {/* Chart grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -906,10 +856,18 @@ function SourceNoticesBanner({ notices }: { notices: SourceNotice[] }) {
 function RiskCallout({ results, query }: { results: LiveResult[]; query: string }) {
   const { t } = useI18n();
   const navigate = useNavigate();
+  const { user } = useAuth();
   const count = results.length;
+  // The AE review queue is pharmacist/admin-only. For other roles, escalation
+  // still flags the mentions for pharmacovigilance — but routing them to the
+  // queue would hit the role guard and bounce them to their home (Brand Pulse),
+  // which read as a broken redirect. So only reviewers navigate; everyone else
+  // gets an inline "flagged" confirmation.
+  const canReview = user?.role === "pharmacist" || user?.role === "admin";
+  const [flagged, setFlagged] = useState(false);
 
   // Live Search is no-write; an explicit human escalation persists the flagged
-  // results into the pharmacovigilance review queue, then routes there.
+  // results into the pharmacovigilance review queue.
   const escalate = useMutation({
     mutationFn: () =>
       apiClient
@@ -927,7 +885,7 @@ function RiskCallout({ results, query }: { results: LiveResult[]; query: string 
           })),
         })
         .then((r) => r.data),
-    onSuccess: () => navigate("/adverse-events"),
+    onSuccess: () => (canReview ? navigate("/adverse-events") : setFlagged(true)),
   });
 
   if (count <= 0) return null;
@@ -947,14 +905,20 @@ function RiskCallout({ results, query }: { results: LiveResult[]; query: string 
           <p className="text-xs text-red-600 mt-1 font-medium">{t("risk.escalateError")}</p>
         )}
       </div>
-      <button
-        onClick={() => escalate.mutate()}
-        disabled={escalate.isPending}
-        className="shrink-0 inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-gradient-to-br from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 rounded-lg shadow-soft transition-all disabled:opacity-60"
-      >
-        {escalate.isPending ? <Loader2 size={13} className="animate-spin" /> : null}
-        {escalate.isPending ? t("risk.escalating") : t("risk.cta")}
-      </button>
+      {flagged ? (
+        <span className="shrink-0 inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-emerald-700 bg-emerald-100 border border-emerald-300 rounded-lg">
+          ✓ Flagged for the pharmacovigilance team
+        </span>
+      ) : (
+        <button
+          onClick={() => escalate.mutate()}
+          disabled={escalate.isPending}
+          className="shrink-0 inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-gradient-to-br from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 rounded-lg shadow-soft transition-all disabled:opacity-60"
+        >
+          {escalate.isPending ? <Loader2 size={13} className="animate-spin" /> : null}
+          {escalate.isPending ? t("risk.escalating") : canReview ? t("risk.cta") : "Flag for review"}
+        </button>
+      )}
     </div>
   );
 }
@@ -964,6 +928,117 @@ function RiskCallout({ results, query }: { results: LiveResult[]; query: string 
 function loadAISaved() {
   try { return JSON.parse(sessionStorage.getItem(AI_STORAGE_KEY) || "{}"); }
   catch { return {}; }
+}
+
+// ── PR24 — Belgium & France product-search insights (gender · age · region) ──
+type Pr24Item = { label: string; share: number | null; note: string };
+type Pr24Source = { title: string | null; url: string | null };
+type Pr24Pillar = { items: Pr24Item[]; sources: Pr24Source[] };
+type Pr24Data = {
+  query: string; summary: string;
+  gender: Pr24Pillar; age_group: Pr24Pillar; region: Pr24Pillar;
+  web_search: boolean; elapsed_ms: number;
+};
+
+function Pr24PillarCard({ title, icon: Icon, pillar }: { title: string; icon: LucideIcon; pillar: Pr24Pillar }) {
+  const { items, sources } = pillar;
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-4 flex flex-col">
+      <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-500 flex items-center gap-1.5 mb-3">
+        <Icon size={14} className="text-emerald-600" /> {title}
+      </h4>
+      {items.length === 0 ? (
+        <p className="text-xs text-slate-400">No segment data.</p>
+      ) : (
+        <div className="space-y-2.5 flex-1">
+          {items.map((it, i) => (
+            <div key={i}>
+              <div className="flex items-center justify-between text-xs mb-1">
+                <span className="font-medium text-slate-700">{it.label}</span>
+                {it.share != null && (
+                  <span className="text-slate-400 tabular-nums" title="Relative interest index (0–100) within this category">
+                    {Math.round(it.share)}/100
+                  </span>
+                )}
+              </div>
+              {it.share != null && (
+                <div className="h-1.5 w-full rounded-full bg-slate-100 overflow-hidden mb-1">
+                  <span className="block h-full rounded-full bg-emerald-500" style={{ width: `${Math.min(100, it.share)}%` }} />
+                </div>
+              )}
+              <p className="text-[11px] text-slate-500 leading-snug">{it.note}</p>
+            </div>
+          ))}
+        </div>
+      )}
+      {/* Data sources for this card */}
+      {sources.length > 0 && (
+        <div className="mt-3 pt-3 border-t border-slate-100">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 mb-1">Data sources</p>
+          <ul className="space-y-0.5">
+            {sources.map((s, i) => (
+              <li key={i} className="text-[11px] leading-snug truncate">
+                {s.url ? (
+                  <a href={s.url} target="_blank" rel="noopener noreferrer"
+                     className="text-emerald-700 hover:underline inline-flex items-center gap-1">
+                    <ExternalLink size={10} className="shrink-0" /> {s.title || s.url}
+                  </a>
+                ) : (
+                  <span className="text-slate-500">{s.title}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Pr24Panel({ data, loading, error, query }: { data: Pr24Data | null; loading: boolean; error: boolean; query: string }) {
+  return (
+    <div className="bg-white border border-slate-200 rounded-2xl shadow-soft overflow-hidden">
+      <div className="px-5 py-3.5 border-b border-slate-100 flex items-center gap-2.5 bg-gradient-to-br from-emerald-500/5 to-transparent">
+        <span className="shrink-0 w-7 h-7 rounded-lg bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center shadow-soft">
+          <MapPin size={15} className="text-white" />
+        </span>
+        <div className="flex-1 min-w-0">
+          <h3 className="text-sm font-semibold text-slate-900">PR24 — Belgium &amp; France product-search insights</h3>
+          <p className="text-[11px] text-slate-400">
+            Who searches for this in Belgium &amp; France · gender · age · region
+            {data?.web_search === false ? " · model knowledge" : " · live web"}
+            {data?.elapsed_ms ? ` · ${(data.elapsed_ms / 1000).toFixed(1)}s` : ""}
+          </p>
+        </div>
+      </div>
+      <div className="p-5">
+        {loading ? (
+          <div className="flex items-center gap-2 text-sm text-emerald-600">
+            <Loader2 size={16} className="animate-spin" /> Profiling Belgium &amp; France search behaviour for “{query}”…
+          </div>
+        ) : error ? (
+          <p className="text-sm text-rose-500">Couldn’t generate PR24 insights — please try again.</p>
+        ) : data ? (
+          <div id="pr24-export" className="space-y-4">
+            <div>
+              <p className="text-sm text-slate-700 leading-relaxed">{data.summary}</p>
+              {/* Explain what the numbers mean */}
+              <p className="text-[11px] text-slate-400 mt-1">
+                Each number is a <strong>0–100 relative-interest index within its category</strong> — higher means that
+                segment searches for this product more, relative to the others in the same category (gender / age / region).
+                Not a percentage of searchers.
+              </p>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <Pr24PillarCard title="Gender" icon={Users} pillar={data.gender} />
+              <Pr24PillarCard title="Age group" icon={Cake} pillar={data.age_group} />
+              <Pr24PillarCard title="Region (Belgium & France)" icon={MapPin} pillar={data.region} />
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
 }
 
 function AIModePanel({ role }: { role: Role }) {
@@ -984,16 +1059,33 @@ function AIModePanel({ role }: { role: Role }) {
     onSuccess: (resp) => setData(resp),
   });
 
+  // Deep Insights — live deep-dive on the latest news for the query.
+  const [insights, setInsights] = useState<any | null>(_aiSaved.insights ?? null);
+  const diMutation = useMutation<any, unknown, { q: string }>({
+    mutationFn: async ({ q }) =>
+      apiClient.get("/search/deep-insights", { params: { q, lang: locale, role }, timeout: 150_000 }).then((r) => r.data),
+    onSuccess: (resp) => setInsights(resp),
+  });
+
+  // PR24 — Belgium & France product-search demographic insights (gender/age/region).
+  const [pr24, setPr24] = useState<Pr24Data | null>(null);
+  const pr24Mutation = useMutation<Pr24Data, unknown, { q: string }>({
+    mutationFn: async ({ q }) =>
+      apiClient.get("/search/pr24", { params: { q, lang: locale, role }, timeout: 60_000 }).then((r) => r.data),
+    onSuccess: (resp) => setPr24(resp),
+  });
+
   useEffect(() => {
     try {
-      sessionStorage.setItem(AI_STORAGE_KEY, JSON.stringify({ query, data }));
+      sessionStorage.setItem(AI_STORAGE_KEY, JSON.stringify({ query, data, insights }));
     } catch {}
-  }, [query, data]);
+  }, [query, data, insights]);
 
   const runQuery = (q: string) => {
     setQuery(q);
     pushRecent(q);
     mutation.mutate({ q });
+    diMutation.mutate({ q });
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -1002,6 +1094,7 @@ function AIModePanel({ role }: { role: Role }) {
     if (q.length >= 2) {
       pushRecent(q);
       mutation.mutate({ q });
+      diMutation.mutate({ q });
     }
   };
 
@@ -1019,20 +1112,61 @@ function AIModePanel({ role }: { role: Role }) {
 
   const sourceCount = data?.sources.length ?? 0;
 
+  // Structured PDF — real text + native page breaks + clickable source links
+  // (not a sliced screenshot). Covers the complete AI Mode result.
+  const [exporting, setExporting] = useState(false);
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      // PR24 is generated on demand by its own button — if it hasn't been run
+      // yet, fetch it now so the PDF carries the COMPLETE AI Mode result.
+      let pr = pr24;
+      if (!pr && query.trim().length >= 2) {
+        try {
+          pr = await apiClient
+            .get("/search/pr24", { params: { q: query, lang: locale, role }, timeout: 60_000 })
+            .then((r) => r.data);
+          setPr24(pr);
+        } catch (e) {
+          console.warn("PR24 fetch for export failed", e);
+        }
+      }
+      await exportAiModePdf({ query, data, insights, pr24: pr });
+    } catch (e) {
+      console.error("AI PDF export failed", e);
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <div className="space-y-6 pt-1 animate-fade-up">
-      {/* Header */}
-      <div>
-        <div className="flex items-center gap-2.5 mb-1">
-          <span className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-gradient-to-br from-accent-500 to-accent-600 shadow-soft">
-            <Sparkles size={15} className="text-white" />
-          </span>
-          <h2 className="text-xl font-bold text-slate-900 tracking-tight">{t("tab.ai")}</h2>
-          <span className="text-[10px] uppercase tracking-wider bg-accent-100 text-accent-700 px-2 py-0.5 rounded-full font-semibold">{t("ai.beta")}</span>
+      {/* Header — export covers the COMPLETE AI Mode result (answer + deep
+          insights + PR24 + all data sources), with clickable links in the PDF. */}
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2.5 mb-1">
+            <span className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-gradient-to-br from-accent-500 to-accent-600 shadow-soft">
+              <Sparkles size={15} className="text-white" />
+            </span>
+            <h2 className="text-xl font-bold text-slate-900 tracking-tight">{t("tab.ai")}</h2>
+            <span className="text-[10px] uppercase tracking-wider bg-accent-100 text-accent-700 px-2 py-0.5 rounded-full font-semibold">{t("ai.beta")}</span>
+          </div>
+          <p className="text-sm text-slate-500">
+            {t("ai.subtitle")} <span className="font-medium text-slate-700">GPT-5.4-mini</span>, {t("ai.grounded")}
+          </p>
         </div>
-        <p className="text-sm text-slate-500">
-          {t("ai.subtitle")} <span className="font-medium text-slate-700">GPT-5.4-mini</span>, {t("ai.grounded")}
-        </p>
+        {(data || pr24 || insights) && (
+          <button
+            onClick={handleExport}
+            disabled={exporting}
+            title="Export the complete AI Search result (analysis + deep insights + PR24 + clickable sources) as a PDF"
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-300 bg-white text-gray-700 text-sm font-medium hover:bg-gray-50 disabled:opacity-60 shadow-soft shrink-0"
+          >
+            {exporting ? <Loader2 size={14} className="animate-spin" /> : <FileDown size={14} />}
+            {exporting ? "Exporting…" : "Export PDF"}
+          </button>
+        )}
       </div>
 
       {/* Search bar */}
@@ -1058,10 +1192,122 @@ function AIModePanel({ role }: { role: Role }) {
             {isFetching ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />}
             {isFetching ? t("ai.analysing") : t("ai.askButton")}
           </button>
+          {/* PR24 — Belgium & France product-search demographics for the current query */}
+          <button
+            type="button"
+            title="PR24 — Belgium & France product-search insights (gender · age · region)"
+            disabled={query.trim().length < 2 || pr24Mutation.isPending}
+            onClick={() => { const qq = query.trim(); if (qq.length >= 2) { pushRecent(qq); pr24Mutation.mutate({ q: qq }); } }}
+            className="flex items-center gap-2 px-5 py-3 text-sm font-semibold rounded-xl border border-emerald-300 bg-white text-emerald-700 hover:bg-emerald-50 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {pr24Mutation.isPending ? <Loader2 size={15} className="animate-spin" /> : <MapPin size={15} />}
+            PR24
+          </button>
         </div>
       </form>
 
       <RecentSearches onPick={(q) => runQuery(q)} />
+
+      {/* PR24 — Belgium & France product-search demographics */}
+      {(pr24Mutation.isPending || pr24) && (
+        <Pr24Panel data={pr24} loading={pr24Mutation.isPending} error={!!pr24Mutation.error} query={query} />
+      )}
+
+      {/* Deep Insights — live deep-dive on the latest news, as ranked key topics */}
+      {(diMutation.isPending || insights) && (
+        <div className="bg-white border border-slate-200 rounded-2xl shadow-soft overflow-hidden">
+          <div className="px-5 py-3.5 border-b border-slate-100 flex items-center gap-2.5 bg-gradient-to-br from-accent-500/5 to-transparent">
+            <span className="shrink-0 w-7 h-7 rounded-lg bg-gradient-to-br from-accent-500 to-accent-600 flex items-center justify-center shadow-soft">
+              <Radar size={15} className="text-white" />
+            </span>
+            <div className="flex-1 min-w-0">
+              <h3 className="text-sm font-semibold text-slate-900">Deep Insights — multi-angle deep dive</h3>
+              <p className="text-[11px] text-slate-400">
+                {insights?.web_search === false ? "model knowledge" : "live web research · multi-angle"}
+                {insights?.role_label ? ` · ${insights.role_label} lens` : ""}
+                {insights?.elapsed_ms ? ` · ${(insights.elapsed_ms / 1000).toFixed(1)}s` : ""}
+              </p>
+            </div>
+          </div>
+          <div className="p-5">
+            {diMutation.isPending ? (
+              <div className="flex items-center gap-2 text-sm text-accent-300">
+                <Loader2 size={16} className="animate-spin" /> Running a multi-angle deep dive on “{query}” — this takes longer than a normal answer…
+              </div>
+            ) : diMutation.error ? (
+              <p className="text-sm text-rose-400">Couldn’t complete the deep dive — please try again.</p>
+            ) : insights ? (
+              <div className="space-y-4">
+                {insights.recommendation && (
+                  <div className="rounded-xl border border-accent-400/30 bg-accent-500/10 px-4 py-3">
+                    <p className="text-[10px] uppercase tracking-wide text-accent-300 font-semibold mb-0.5">
+                      {insights.role_label ? `${insights.role_label} — recommendation` : "Recommendation"}
+                    </p>
+                    <p className="text-sm font-semibold text-slate-100">{insights.recommendation}</p>
+                  </div>
+                )}
+                {insights.headline && <p className="text-sm text-slate-300">{insights.headline}</p>}
+                {insights.insights?.length > 0 && (
+                  <ul className="space-y-3">
+                    {insights.insights.map((it: any, i: number) => (
+                      <li key={i} className="flex gap-3">
+                        <span className="shrink-0 mt-0.5 w-5 h-5 rounded-md bg-accent-500/20 text-accent-200 text-[11px] font-bold flex items-center justify-center">{i + 1}</span>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-sm font-semibold text-slate-900">{it.topic}</span>
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded-full border font-medium ${INSIGHT_CAT[it.category] ?? INSIGHT_CAT.other}`}>{it.category}</span>
+                            {it.recency && <span className="text-[10px] text-slate-400">{it.recency}</span>}
+                          </div>
+                          <p className="text-sm text-slate-600 leading-relaxed mt-0.5">{it.detail}</p>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                {/* Research trail — the actual evidence the deep dive gathered */}
+                {insights.findings?.length > 0 && (
+                  <div className="pt-3 border-t border-white/10">
+                    <p className="text-[10px] uppercase tracking-wide text-slate-400 mb-2">
+                      Research trail · {insights.findings.length} findings across {insights.angles?.length ?? 0} live-searched angles
+                    </p>
+                    {insights.angles?.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 mb-3">
+                        {insights.angles.map((a: string, i: number) => (
+                          <span key={i} className="text-[10px] px-2 py-0.5 rounded-full bg-accent-500/10 border border-accent-400/25 text-accent-200 font-medium">{a}</span>
+                        ))}
+                      </div>
+                    )}
+                    <ul className="space-y-2">
+                      {insights.findings.map((f: any, i: number) => (
+                        <li key={i} className="flex gap-2 text-xs leading-relaxed">
+                          <span className="shrink-0 mt-0.5 text-accent-300/70">▸</span>
+                          <span className="flex-1 min-w-0">
+                            <span className="text-slate-300">{f.fact}</span>
+                            {f.date && <span className="text-slate-500"> · {f.date}</span>}
+                            {f.source_url ? (
+                              <a href={f.source_url} target="_blank" rel="noopener noreferrer"
+                                 className="inline-flex items-center gap-0.5 text-blue-400 hover:underline ml-1.5">
+                                {(f.source_title || "source").slice(0, 40)} <ExternalLink size={9} />
+                              </a>
+                            ) : f.source_title ? (
+                              <span className="text-slate-500 ml-1.5">· {f.source_title.slice(0, 40)}</span>
+                            ) : null}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {!insights.insights?.length && !insights.findings?.length && (
+                  <p className="text-sm text-slate-400">No recent news surfaced for this query.</p>
+                )}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      )}
 
       {/* Loading — pulse + skeleton answer */}
       {isFetching && (
@@ -1238,6 +1484,22 @@ function LiveSearchPanel({ role }: { role: Role }) {
   const [filterSentiment, setFilterSentiment] = useState<string>(_saved.filterSentiment ?? "");
   const [period, setPeriod] = useState<string>(_saved.period ?? "all");
   const [showFilters, setShowFilters] = useState(false);
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // Honour a `?q=` deep-link (e.g. "Review brand risk", "Full search" buttons):
+  // pre-fill + run the search, optionally focusing the risk view with `?risk=1`,
+  // then clear the params so a later manual search isn't overridden.
+  useEffect(() => {
+    const urlQ = (searchParams.get("q") ?? "").trim();
+    if (urlQ.length >= 2) {
+      setQuery(urlQ);
+      setSubmitted(urlQ);
+      pushRecent(urlQ);
+      if (searchParams.get("risk") === "1") setFilterSentiment("negative");
+      setSearchParams({}, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     try {
@@ -1389,10 +1651,18 @@ function LiveSearchPanel({ role }: { role: Role }) {
           <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-3">
             <div className="min-w-0">
               <div className="flex items-baseline gap-2 flex-wrap">
-                <span className="text-3xl font-bold text-slate-900 tabular-nums leading-none">{total}</span>
+                <span className="text-3xl font-bold text-slate-900 tabular-nums leading-none">
+                  {filterSentiment ? displayResults.length : total}
+                </span>
                 <span className="text-sm font-medium text-slate-700">
                   {total === 1 ? t("results.countLabel.one") : t("results.countLabel")}
                 </span>
+                {/* Make the active sentiment filter unmistakable in the header */}
+                {filterSentiment && (
+                  <span className="text-xs font-medium text-slate-500">
+                    of {total} · <span className="capitalize text-slate-700">{filterSentiment}</span>
+                  </span>
+                )}
                 <span className="text-brand-700 font-semibold text-sm truncate max-w-xs">"{data.query}"</span>
               </div>
               <p className="text-xs text-slate-400 mt-1.5">
@@ -1410,18 +1680,22 @@ function LiveSearchPanel({ role }: { role: Role }) {
             </div>
           </div>
 
-          {/* Sentiment filter — its own segmented control row */}
+          {/* Sentiment filter — its own segmented control row. bg-slate-100 (not
+              bg-white) so the control reads as a distinct control on the light
+              theme's near-white page, not just a faint border. */}
           {total > 0 && (
-            <div className="inline-flex items-center bg-white border border-slate-200 rounded-lg p-1 shadow-soft">
+            <div className="inline-flex items-center bg-slate-100 border border-slate-200 rounded-lg p-1 shadow-soft">
               <button
+                type="button"
                 onClick={() => setFilterSentiment("")}
-                className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${!filterSentiment ? "bg-slate-900 text-white shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
+                className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${!filterSentiment ? "bg-brand-600 text-white shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
               >
                 {t("sentiment.all")}
               </button>
               {SENTIMENTS.map((s) => (
                 <button
                   key={s}
+                  type="button"
                   onClick={() => setFilterSentiment(filterSentiment === s ? "" : s)}
                   className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${filterSentiment === s ? SENTIMENT_STYLE[s] + " shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
                 >

@@ -32,6 +32,20 @@ html { font-family: 'Inter', ui-sans-serif, system-ui, sans-serif; }
   --cyan:      #34d3ee;
 }
 
+/* LIGHT theme — pages already use native light Tailwind utilities, so light mode
+   simply omits the `.surface-app` dark reskin (see Layout). Here we only flip the
+   shared chrome tokens (canvas, text ramp, borders) used by body + components. */
+:root[data-theme="light"] {
+  --bg:        #eef2f8;
+  --surface:   rgba(15,23,42,0.03);
+  --surface-2: rgba(15,23,42,0.06);
+  --border:    rgba(15,23,42,0.10);
+  --border-2:  rgba(15,23,42,0.16);
+  --text:      #0f172a;
+  --text-2:    #475569;
+  --text-3:    #94a3b8;
+}
+
 body {
   @apply antialiased;
   background-color: var(--bg);
@@ -40,16 +54,105 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* Workspace canvas — layered radial glows + faint grid for that terminal feel. */
+/* Workspace canvas — layered radial glows + faint grid for that terminal feel.
+   The two top glows pick up the active role's accent (--role-accent-rgb, set on
+   the app shell in Layout.tsx) so the whole workspace re-tints per role; the
+   foot glow stays cyan as a constant ambient. Falls back to brand blue/violet. */
 .surface-app {
   background-color: var(--bg);
+  /* No grid (removed per request) — just the role-tinted glows + a cyan foot glow. */
   background-image:
-    radial-gradient(1100px 600px at 6% -10%, rgba(91,134,255,0.16), transparent 55%),
-    radial-gradient(900px 600px at 108% 4%, rgba(164,134,255,0.16), transparent 55%),
-    radial-gradient(700px 500px at 50% 120%, rgba(52,211,238,0.08), transparent 60%),
-    linear-gradient(rgba(148,163,184,0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(148,163,184,0.04) 1px, transparent 1px);
-  background-size: auto, auto, auto, 34px 34px, 34px 34px;
+    radial-gradient(1100px 600px at 6% -10%, rgba(var(--role-accent-rgb, 91,134,255),0.15), transparent 55%),
+    radial-gradient(900px 600px at 108% 4%, rgba(var(--role-accent-rgb, 164,134,255),0.13), transparent 55%),
+    radial-gradient(700px 500px at 50% 120%, rgba(52,211,238,0.08), transparent 60%);
+}
+
+/* Light workspace canvas — near-white with a soft role-tinted glow + faint grid,
+   mirroring the dark canvas's ambience. Used instead of `.surface-app` in light
+   mode, so none of the dark `.surface-app .*` overrides apply and pages render in
+   their native light Tailwind utilities. */
+.surface-light {
+  background-color: var(--bg);
+  /* No grid — just a soft role-tinted wash at the top corners. */
+  background-image:
+    radial-gradient(1100px 600px at 6% -10%, rgba(var(--role-accent-rgb, 91,134,255),0.09), transparent 55%),
+    radial-gradient(900px 600px at 108% 4%, rgba(var(--role-accent-rgb, 164,134,255),0.06), transparent 55%);
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   LIGHT-MODE page reskin — symmetric to the dark `.surface-app` layer above.
+   Half the components were authored dark-first (text-white, slate-200/300/400,
+   translucent-white fills/borders, neon -200/-300 status text) and have ~zero
+   contrast on the light canvas. Remap those dark idioms to light-readable
+   values. Native light Tailwind (bg-white, text-gray-900, pastel -50/-100
+   pills) is already correct and left untouched.
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* translucent-white panel fills → subtle dark-tint fills (visible on white) */
+.surface-light .bg-white\/5,
+.surface-light .bg-white\/10,
+.surface-light .bg-white\/15,
+.surface-light .bg-white\/20,
+.surface-light .bg-white\/\[0\.02\],
+.surface-light .bg-white\/\[0\.03\],
+.surface-light .bg-white\/\[0\.04\],
+.surface-light .bg-white\/\[0\.045\],
+.surface-light .bg-white\/\[0\.05\],
+.surface-light .bg-white\/\[0\.07\],
+.surface-light .bg-white\/\[0\.08\] { background-color: rgba(15,23,42,0.04) !important; }
+
+/* hover translucent fills */
+.surface-light .hover\:bg-white\/5:hover,
+.surface-light .hover\:bg-white\/10:hover,
+.surface-light .hover\:bg-white\/\[0\.05\]:hover,
+.surface-light .hover\:bg-white\/\[0\.07\]:hover { background-color: rgba(15,23,42,0.07) !important; }
+
+/* white borders/rings → light slate strokes */
+.surface-light .border-white\/5,
+.surface-light .border-white\/10,
+.surface-light .border-white\/15,
+.surface-light .border-white\/20,
+.surface-light .ring-white\/10 { border-color: rgba(15,23,42,0.10) !important; }
+
+/* muted slate text → darkened so labels/headers read on white */
+.surface-light .text-slate-100 { color: #1e293b !important; }
+.surface-light .text-slate-200 { color: #334155 !important; }
+.surface-light .text-slate-300 { color: #475569 !important; }
+.surface-light .text-slate-400 { color: #64748b !important; }
+/* slate-500 (#64748b) already reads on white — left as-is */
+
+/* light brand/accent -100/-200 text (e.g. the Upgrade card's "Preview" in
+   text-accent-200, title in text-slate-100) → darker so it reads on white */
+.surface-light .text-accent-100, .surface-light .text-accent-200, .surface-light .text-accent-300 { color: #6d28d9 !important; }
+.surface-light .text-brand-100,  .surface-light .text-brand-200,  .surface-light .text-brand-300  { color: #1d4ed8 !important; }
+.surface-light .text-blue-100,   .surface-light .text-blue-200                                    { color: #1d4ed8 !important; }
+.surface-light .text-amber-100                                                                     { color: #b45309 !important; }
+
+/* neon -200/-300 status text (tuned for dark) → darker so it reads on white */
+.surface-light .text-emerald-200, .surface-light .text-emerald-300 { color: #047857 !important; }
+.surface-light .text-amber-200,   .surface-light .text-amber-300   { color: #b45309 !important; }
+.surface-light .text-rose-200,    .surface-light .text-rose-300,
+.surface-light .text-red-100,     .surface-light .text-red-200,    .surface-light .text-red-300     { color: #b91c1c !important; }
+.surface-light .text-orange-100,  .surface-light .text-orange-200, .surface-light .text-orange-300  { color: #c2410c !important; }
+.surface-light .text-sky-300,     .surface-light .text-cyan-300    { color: #0e7490 !important; }
+.surface-light .text-violet-300,  .surface-light .text-purple-300  { color: #6d28d9 !important; }
+.surface-light .text-blue-300                                       { color: #1d4ed8 !important; }
+
+/* white text → dark, EXCEPT on solid/gradient coloured surfaces (buttons,
+   badges) where white is correct. Preservation rules below win on specificity. */
+.surface-light .text-white { color: #0f172a !important; }
+.surface-light [class*="bg-gradient-to"].text-white, .surface-light [class*="bg-gradient-to"] .text-white,
+.surface-light [class*="bg-blue-6"].text-white,  .surface-light [class*="bg-blue-6"] .text-white,
+.surface-light [class*="bg-blue-7"].text-white,  .surface-light [class*="bg-blue-7"] .text-white,
+.surface-light [class*="bg-brand-"].text-white,  .surface-light [class*="bg-brand-"] .text-white,
+.surface-light [class*="bg-accent-"].text-white, .surface-light [class*="bg-accent-"] .text-white,
+.surface-light [class*="bg-purple-"].text-white, .surface-light [class*="bg-purple-"] .text-white,
+.surface-light [class*="bg-violet-"].text-white, .surface-light [class*="bg-violet-"] .text-white,
+.surface-light [class*="bg-emerald-"].text-white,.surface-light [class*="bg-emerald-"] .text-white,
+.surface-light [class*="bg-red-6"].text-white,   .surface-light [class*="bg-red-6"] .text-white,
+.surface-light [class*="bg-red-7"].text-white,   .surface-light [class*="bg-red-7"] .text-white,
+.surface-light [class*="bg-indigo-"].text-white, .surface-light [class*="bg-indigo-"] .text-white {
+  color: #ffffff !important;
 }
 
 /* ── Glass card: the de-facto card in every page is `bg-white rounded-xl border`.
@@ -260,3 +363,30 @@ body {
 .accent-neutral  { box-shadow: inset 4px 0 0 0 #64748b; }
 .accent-negative { box-shadow: inset 4px 0 0 0 #ef4444; }
 .accent-risk     { box-shadow: inset 4px 0 0 0 #ef4444, 0 0 0 1px rgba(239, 68, 68, 0.25); }
+
+/* ════════════════════════════════════════════════════════════════════════
+   LIGHT-THEME overrides for the shared rich chrome (the dark `.surface-app .*`
+   page reskin is simply not applied in light mode — see Layout).
+   ════════════════════════════════════════════════════════════════════════ */
+:root[data-theme="light"] .glass {
+  background: linear-gradient(180deg, #ffffff, #f8fafc);
+  border: 1px solid var(--border);
+}
+:root[data-theme="light"] .skeleton {
+  background: linear-gradient(90deg, rgba(15,23,42,0.05) 0%, rgba(15,23,42,0.10) 50%, rgba(15,23,42,0.05) 100%);
+  background-size: 936px 100%;
+}
+:root[data-theme="light"] ::-webkit-scrollbar-thumb {
+  background-color: rgba(15,23,42,0.18);
+}
+:root[data-theme="light"] ::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(15,23,42,0.30);
+}
+/* The text-gradient mark is tuned for dark; darken its stops so it reads on white */
+:root[data-theme="light"] .text-gradient {
+  background: linear-gradient(90deg, #3f6dff, #885dfa 60%, #0891b2);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+:root[data-theme="light"] .lift:hover {
+  box-shadow: 0 0 0 1px rgba(91,134,255,0.18), 0 18px 40px -20px rgba(15,23,42,0.25);
+}

@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.dependencies import get_current_user, require_lab
 from core.database import get_db
+from intelligence.inn_resolver import is_belgian_medicine
 from models.mention import Mention, MentionClassification, Sentiment, Topic, RiskType
 from models.trend import TrendPeriod, TrendSignal
 from models.user import User, UserRole
@@ -25,19 +26,43 @@ def _enum_val(x):
     return x.value if hasattr(x, "value") else x
 
 
+async def _framework_brand_ids(db: AsyncSession, role_value: str):
+    """Framework brands whose workbook `kpi_roles` include this role.
+
+    These are the Datatopia tracked brands (La Roche-Posay, Eucerin, …) seeded
+    with `category` + `kpi_roles`. They are what each role should be able to
+    browse on the brand dashboards, independent of manufacturer ownership.
+    """
+    from models.brand import Brand
+
+    rows = await db.execute(
+        select(Brand.id)
+        .where(Brand.category.isnot(None))
+        .where(Brand.kpi_roles.contains([role_value]))
+    )
+    return set(rows.scalars().all())
+
+
 async def _owned_brand_ids(db: AsyncSession, current_user: User):
     """The set of brand ids a user may view, or None meaning 'all brands'.
 
-    Ownership is scoped by **manufacturer**: a lab user linked to a brand_group
-    owns every brand made by that group's manufacturer (a real portfolio, e.g.
-    a Sanofi user owns Doliprane + Enterogermina + Telfast). Admins and unlinked
-    users are unrestricted (None).
+    Two things make a brand viewable:
+      • **Manufacturer ownership** — a lab user linked to a brand_group owns
+        every brand made by that group's manufacturer (e.g. a Sanofi user owns
+        Doliprane + Enterogermina + Telfast).
+      • **Role interest** — the Datatopia framework brands whose `kpi_roles`
+        include this user's role, so the workbook's tracked brands show up in the
+        dropdown for the right persona even though they sit in other groups.
+
+    The viewable set is the union of the two. Admins are unrestricted (None).
     """
     if current_user.role == UserRole.admin:
         return None
+
+    fw = await _framework_brand_ids(db, current_user.role.value)
     group_id = getattr(current_user, "brand_group_id", None)
     if not group_id:
-        return None
+        return fw or None
 
     from models.brand import Brand
 
@@ -50,11 +75,11 @@ async def _owned_brand_ids(db: AsyncSession, current_user: User):
         if m
     ]
     if not mfrs:
-        return None
+        return fw or None
     ids = (
         await db.execute(select(Brand.id).where(Brand.manufacturer.in_(mfrs)))
     ).scalars().all()
-    return set(ids)
+    return set(ids) | fw
 
 
 async def _resolve_brand_id(
@@ -68,11 +93,14 @@ async def _resolve_brand_id(
     the dashboard always lands on a brand that actually has data.
     """
     from models.mention import MentionEntity, EntityType
+    from models.brand import Brand
+
+    if brand_id is not None:
+        exists = await db.scalar(select(Brand.id).where(Brand.id == brand_id))
+        if exists:
+            return brand_id
 
     owned = await _owned_brand_ids(db, current_user)
-
-    if brand_id and (owned is None or brand_id in owned):
-        return brand_id
 
     # Default: the most-mentioned brand within the allowed pool.
     most_q = (
@@ -102,8 +130,10 @@ class MyBrandOut(BaseModel):
     id: int
     name: str
     manufacturer: Optional[str]
+    category: Optional[str]
     is_competitor: bool
     has_data: bool
+    is_medicine: bool = False
 
 
 @router.get("/my-brands", response_model=List[MyBrandOut])
@@ -118,10 +148,12 @@ async def my_brands(
     from models.brand import Brand
     from models.mention import MentionEntity, EntityType
 
-    owned = await _owned_brand_ids(db, current_user)
-    q = select(Brand)
-    if owned is not None:
-        q = q.where(Brand.id.in_(owned))
+    # Every role can browse every tracked brand. Only the tracked (framework)
+    # brands belong in the picker — legacy seed brands (Doliprane, Advil, …) carry
+    # no `category` and have no linked data, so they'd just be dead options.
+    # (Manufacturer ownership no longer scopes the picker — the role only changes
+    # which KPIs are shown, not which brands are selectable.)
+    q = select(Brand).where(Brand.category.isnot(None))
     brands = (await db.execute(q.order_by(Brand.name))).scalars().all()
 
     data_ids = set(
@@ -138,8 +170,10 @@ async def my_brands(
             id=b.id,
             name=b.name,
             manufacturer=b.manufacturer,
+            category=b.category,
             is_competitor=bool(b.is_competitor),
             has_data=b.id in data_ids,
+            is_medicine=is_belgian_medicine(b.name),
         )
         for b in brands
     ]
@@ -463,14 +497,17 @@ async def weekly_summary(
     from datetime import date, timedelta
 
     today = date.today()
-    week_start = today - timedelta(days=7)
+    # 30-day rolling window vs the prior 30 days — enough span for real
+    # period-over-period deltas ("what changed"), unlike a 7-day slice.
+    period_start = today - timedelta(days=30)
 
     summary_text = await generate_weekly_summary(
-        brand_id=resolved_brand_id, period_start=week_start, period_end=today, db=db
+        brand_id=resolved_brand_id, period_start=period_start, period_end=today, db=db,
+        role=getattr(current_user, "role", "brand_manager"),
     )
     return WeeklySummaryOut(
         brand_id=resolved_brand_id,
-        period_start=week_start,
+        period_start=period_start,
         period_end=today,
         summary=summary_text,
         generated_at=datetime.utcnow(),

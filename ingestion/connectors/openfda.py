@@ -25,6 +25,44 @@ LABEL_API = "https://api.fda.gov/drug/label.json"
 EVENT_API = "https://api.fda.gov/drug/event.json"
 _HEADERS = {"User-Agent": "PharmaWatch/1.0"}
 
+# openFDA is US FDA data and indexes US/USAN generic names, while our brands are
+# keyed by the European INN — so an INN query (e.g. "paracetamol") returns 0.
+# Map the common INN→US differences so we ALSO query the US name. Keyed lowercase.
+_INN_TO_US = {
+    "paracetamol": "acetaminophen",
+    "salbutamol": "albuterol",
+    "adrenaline": "epinephrine",
+    "noradrenaline": "norepinephrine",
+    "rifampicin": "rifampin",
+    "glibenclamide": "glyburide",
+    "ciclosporin": "cyclosporine",
+    "beclometasone": "beclomethasone",
+    "chlorphenamine": "chlorpheniramine",
+    "indometacin": "indomethacin",
+    "dosulepin": "dothiepin",
+    "pethidine": "meperidine",
+    "colecalciferol": "cholecalciferol",
+    "trimethoprim sulfamethoxazole": "trimethoprim sulfamethoxazole",
+    "bendroflumethiazide": "bendrofluazide",
+    "dexamfetamine": "dextroamphetamine",
+    "amfetamine": "amphetamine",
+    "oestradiol": "estradiol",
+    "oestrogen": "estrogen",
+    "ciclesonide": "ciclesonide",
+    "levothyroxine": "levothyroxine",
+    "furosemide": "furosemide",
+}
+
+
+def _us_terms(keyword: str) -> List[str]:
+    """The keyword plus its US/USAN synonym (if the INN differs) — so openFDA,
+    which indexes US names, still matches a EU-INN query."""
+    terms = [keyword]
+    us = _INN_TO_US.get((keyword or "").strip().lower())
+    if us and us.lower() != (keyword or "").strip().lower():
+        terms.append(us)
+    return terms
+
 
 def _parse_fda_date(raw: str):
     """openFDA dates come as YYYYMMDD."""
@@ -42,11 +80,18 @@ class OpenFDAConnector(BaseConnector):
     async def _fetch_labels(self, client: httpx.AsyncClient, keyword: str) -> List[RawMention]:
         out: List[RawMention] = []
         try:
+            # Query the INN AND its US synonym (paracetamol → acetaminophen, …).
+            search = " OR ".join(
+                f'openfda.brand_name:"{t}" OR openfda.generic_name:"{t}"'
+                for t in _us_terms(keyword)
+            )
             resp = await client.get(
                 LABEL_API,
                 params={
-                    "search": f'openfda.brand_name:"{keyword}" OR openfda.generic_name:"{keyword}"',
-                    "limit": 5,
+                    "search": search,
+                    # Was 5 — far too few label records; 100 captures the brand's full
+                    # label/indication/warning set (openFDA caps a page at 1000).
+                    "limit": 100,
                 },
             )
             if resp.status_code != 200:
@@ -91,19 +136,27 @@ class OpenFDAConnector(BaseConnector):
             logger.warning("openfda_label_failed", keyword=keyword, error=str(exc))
         return out
 
-    async def _fetch_events(self, client: httpx.AsyncClient, keyword: str) -> List[RawMention]:
+    async def _fetch_events(self, client: httpx.AsyncClient, keyword: str,
+                            countries: List[str] | None = None) -> List[RawMention]:
         out: List[RawMention] = []
-        try:
-            resp = await client.get(
-                EVENT_API,
-                params={
-                    "search": (
-                        f'patient.drug.openfda.brand_name:"{keyword}" '
-                        f'OR patient.drug.openfda.generic_name:"{keyword}"'
-                    ),
-                    "limit": 5,
-                },
+        # Query the INN AND its US synonym (paracetamol → acetaminophen, …).
+        drug_q = " OR ".join(
+            f'patient.drug.openfda.brand_name:"{t}" '
+            f'OR patient.drug.openfda.generic_name:"{t}"'
+            for t in _us_terms(keyword)
+        )
+        # Belgium-only: restrict to events that occurred in / were reported from
+        # the requested countries (FAERS does carry EU/BE reports). NO global
+        # fallback — we'd rather return nothing than surface US/global AE reports
+        # as if they were Belgian. (EU/BE safety proper lives in EudraVigilance.)
+        search = f"({drug_q})"
+        if countries:
+            cc = " OR ".join(
+                f'occurcountry:"{c}" OR primarysource.reportercountry:"{c}"' for c in countries
             )
+            search = f"({drug_q}) AND ({cc})"
+        try:
+            resp = await client.get(EVENT_API, params={"search": search, "limit": 100})
             if resp.status_code != 200:
                 return []
             for entry in resp.json().get("results", []):
@@ -131,7 +184,7 @@ class OpenFDAConnector(BaseConnector):
                     RawMention(
                         source_type=self.source_type,
                         source_url=f"https://api.fda.gov/drug/event.json?search=safetyreportid:{report_id}",
-                        country=None,
+                        country=(entry.get("occurcountry") or (countries[0] if countries else None)),
                         language="en",
                         published_at=report_date,
                         raw_text=text[:1200],
@@ -141,6 +194,7 @@ class OpenFDAConnector(BaseConnector):
                             "subtype": "adverse_event",
                             "serious": serious,
                             "report_id": report_id,
+                            "occurcountry": entry.get("occurcountry"),
                             "reactions": reaction_terms[:10],
                         },
                     )
@@ -160,7 +214,7 @@ class OpenFDAConnector(BaseConnector):
             for keyword in keywords:
                 labels, events = await asyncio.gather(
                     self._fetch_labels(client, keyword),
-                    self._fetch_events(client, keyword),
+                    self._fetch_events(client, keyword, countries),
                     return_exceptions=True,
                 )
                 if isinstance(labels, list):

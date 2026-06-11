@@ -122,13 +122,20 @@ def _safety_score(
         rows_q = rows_q.where(Mention.country == country)
     rows = db.execute(rows_q).fetchall()
     total = len(rows)
-    if total == 0:
-        return 50.0, 0  # no data → neutral
+    # Below a minimum base the score isn't meaningful — return neutral (not a
+    # confident "95% cleared" off one or two mentions).
+    MIN_SAFETY_BASE = 5
+    if total < MIN_SAFETY_BASE:
+        return 50.0, total
     negative = sum(1 for r in rows if r.sentiment == Sentiment.negative)
     risky = sum(1 for r in rows if r.risk_type and r.risk_type != RiskType.none)
     neg_share = negative / total
     risk_share = risky / total
-    raw = 100.0 - (neg_share * 100.0) - (risk_share * 100.0)
+    # "Safety clearance" = absence of genuine SAFETY signals, not general mood.
+    # Risk-flagged mentions (adverse-event/quality/safety) penalise fully; plain
+    # negative sentiment is a much weaker safety signal (a grumpy-but-safe review
+    # shouldn't read as "unsafe"), so it's down-weighted.
+    raw = 100.0 - (risk_share * 100.0) - (neg_share * 40.0)
     return clamp_score(raw), total
 
 
@@ -138,6 +145,7 @@ def _freshness_score(
     country: Optional[str],
 ) -> float:
     """Linear decay: 100 if newest mention is today, 0 at 180+ days old."""
+    from core.source_taxonomy import DEMAND_SOURCE_TYPES
     q = (
         select(func.max(Mention.published_at))
         .join(MentionEntity, MentionEntity.mention_id == Mention.id)
@@ -145,6 +153,9 @@ def _freshness_score(
             MentionEntity.entity_type == "brand",
             MentionEntity.entity_id == brand_id,
             Mention.is_deleted.is_(False),
+            # Freshness = recency of CONSUMER activity. A collection-stamped
+            # reference row (BCFI/openFDA/etc.) must not make a brand look "fresh".
+            Mention.source_type.in_(DEMAND_SOURCE_TYPES),
         )
     )
     if country:
@@ -152,7 +163,7 @@ def _freshness_score(
     newest = db.execute(q).scalar()
     if newest is None:
         return 0.0
-    age = (date.today() - newest.date()).days
+    age = max(0, (date.today() - newest.date()).days)
     if age <= 14:
         return 100.0
     if age >= 180:
@@ -187,14 +198,19 @@ def compute_launch_readiness(
     lifecycle_fit = LIFECYCLE_FIT.get(lifecycle.stage, 0.0)
     momentum_score = momentum.momentum_score
 
-    score = (
-        WEIGHTS["bpi"] * bpi_score
-        + WEIGHTS["lifecycle"] * lifecycle_fit
-        + WEIGHTS["momentum"] * momentum_score
-        + WEIGHTS["safety"] * safety
-        + WEIGHTS["freshness"] * freshness
-    )
-    score = clamp_score(score)
+    # Blend the weighted components, but drop momentum when there's no activity to
+    # read (its 50 baseline isn't a real signal) and renormalise so it isn't counted
+    # as a neutral filler dragging the score toward the middle.
+    parts = {
+        "bpi": bpi_score,
+        "lifecycle": lifecycle_fit,
+        "safety": safety,
+        "freshness": freshness,
+    }
+    if momentum.has_signal:
+        parts["momentum"] = momentum_score
+    weight_total = sum(WEIGHTS[k] for k in parts)
+    score = clamp_score(sum(WEIGHTS[k] * v for k, v in parts.items()) / weight_total)
 
     confidence = (
         (bpi_result.components.confidence if bpi_result else 0.0) * 0.5

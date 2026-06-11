@@ -18,21 +18,29 @@ _HEADERS = {"User-Agent": "PharmaWatch/1.0"}
 
 
 def _parse_pubdate(raw: str):
-    """PubMed pubdate is messy: '2025 Mar 12', '2025 Mar', '2025', '2025 Spring'.
-    Try the structured formats first, then fall back to year-only.
+    """Parse a PubMed date string, returning ``(datetime | None, precision)``.
+
+    PubMed dates are messy and frequently coarse: '2025 Mar 12', '2025 Mar',
+    '2025', '2025 Spring'. A missing month/day cannot be recovered from the
+    source, so year-only / month-only values resolve to the first of the period
+    and are flagged via ``precision`` ('day' | 'month' | 'year') so downstream
+    recency metrics can downweight or exclude dates that aren't day-accurate
+    (otherwise ~13% of the corpus piles onto Jan-01 / the 1st of each month and
+    fabricates daily spikes).
     """
     if not raw:
-        return None
-    for fmt in ("%Y %b %d", "%Y %b", "%Y"):
+        return None, None
+    raw = raw.strip()
+    for fmt, precision in (("%Y %b %d", "day"), ("%Y %b", "month"), ("%Y", "year")):
         try:
-            return datetime.strptime(raw[: len(fmt) + 6], fmt).replace(tzinfo=timezone.utc)
+            return datetime.strptime(raw, fmt).replace(tzinfo=timezone.utc), precision
         except ValueError:
             continue
-    head = raw.split(" ", 1)[0]
+    # Last resort: a leading 4-digit year ('2025 Spring', '2025-2026', …).
     try:
-        return datetime.strptime(head, "%Y").replace(tzinfo=timezone.utc)
+        return datetime.strptime(raw[:4], "%Y").replace(tzinfo=timezone.utc), "year"
     except ValueError:
-        return None
+        return None, None
 
 
 class PubMedConnector(BaseConnector):
@@ -56,7 +64,9 @@ class PubMedConnector(BaseConnector):
                             "db": "pubmed",
                             "term": keyword,
                             "retmode": "json",
-                            "retmax": 8,
+                            # Was 8 — far too few; a molecule can have hundreds of
+                            # papers, so 8 silently undercounts the evidence base.
+                            "retmax": 50,
                             "sort": "date",
                         },
                     )
@@ -95,7 +105,13 @@ class PubMedConnector(BaseConnector):
                     if not title:
                         continue
                     journal = entry.get("fulljournalname") or entry.get("source") or ""
-                    published_at = _parse_pubdate(entry.get("pubdate") or entry.get("epubdate") or "")
+                    # Prefer epubdate (the real electronic-publication date) over
+                    # pubdate (the journal *issue* date, which for ahead-of-print
+                    # articles is routinely a future issue → published_at in the
+                    # future). Fall back to pubdate only when epub is absent.
+                    published_at, date_precision = _parse_pubdate(
+                        entry.get("epubdate") or entry.get("pubdate") or ""
+                    )
                     authors = [
                         a.get("name", "")
                         for a in (entry.get("authors") or [])[:3]
@@ -119,7 +135,8 @@ class PubMedConnector(BaseConnector):
                             raw_text=text[:800],
                             query_used=keyword,
                             engagement_count=None,
-                            metadata={"pmid": pmid, "journal": journal},
+                            metadata={"pmid": pmid, "journal": journal,
+                                      "date_precision": date_precision},
                         )
                     )
 

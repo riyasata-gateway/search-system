@@ -44,7 +44,7 @@ class MetricValue:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "kind": self.kind.value,
-            "value": round(self.value, 4),
+            "value": round(self.value, 4) if self.value is not None else None,
             "label": self.label,
             "unit": self.unit,
             "delta": round(self.delta, 4) if self.delta is not None else None,
@@ -57,8 +57,11 @@ class MetricValue:
         }
 
 
-def clamp_score(raw: float, lo: float = 0.0, hi: float = 100.0) -> float:
-    """Clamp arbitrary composites into the 0–100 SCORE range."""
+def clamp_score(raw: Optional[float], lo: float = 0.0, hi: float = 100.0) -> Optional[float]:
+    """Clamp arbitrary composites into the 0–100 SCORE range. None passes through
+    (an undefined metric — e.g. momentum with no activity — shown as 'No signal')."""
+    if raw is None:
+        return None
     if raw != raw:  # NaN guard
         return lo
     return max(lo, min(hi, raw))

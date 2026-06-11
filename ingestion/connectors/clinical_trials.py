@@ -16,6 +16,9 @@ logger = get_logger(__name__)
 
 CT_API = "https://clinicaltrials.gov/api/v2/studies"
 _HEADERS = {"User-Agent": "PharmaWatch/1.0", "Accept": "application/json"}
+# Safety cap on the paginated fetch (runaway guard for a pathological broad
+# term), NOT an arbitrary content limit — molecules rarely exceed this.
+_MAX_STUDIES_PER_KW = 300
 
 
 class ClinicalTrialsConnector(BaseConnector):
@@ -33,18 +36,25 @@ class ClinicalTrialsConnector(BaseConnector):
         async with httpx.AsyncClient(timeout=10.0, headers=_HEADERS) as client:
             for keyword in keywords:
                 try:
-                    resp = await client.get(
-                        CT_API,
-                        params={
-                            "query.term": keyword,
-                            "pageSize": 8,
-                            "format": "json",
-                            "sort": "LastUpdatePostDate:desc",
-                        },
-                    )
-                    if resp.status_code != 200:
+                    # Fetch ALL trials for the molecule (was capped at 8) by following
+                    # the API's nextPageToken; a generous safety cap guards against a
+                    # pathological broad term, it is not an arbitrary content limit.
+                    studies, token = [], None
+                    while len(studies) < _MAX_STUDIES_PER_KW:
+                        params = {"query.term": keyword, "pageSize": 100,
+                                  "format": "json", "sort": "LastUpdatePostDate:desc"}
+                        if token:
+                            params["pageToken"] = token
+                        resp = await client.get(CT_API, params=params)
+                        if resp.status_code != 200:
+                            break
+                        data = resp.json()
+                        studies.extend(data.get("studies", []) or [])
+                        token = data.get("nextPageToken")
+                        if not token:
+                            break
+                    if not studies:
                         continue
-                    studies = resp.json().get("studies", []) or []
                 except Exception as exc:
                     logger.warning("clinical_trials_failed", keyword=keyword, error=str(exc))
                     continue
@@ -66,6 +76,7 @@ class ClinicalTrialsConnector(BaseConnector):
                     if not brief_title:
                         continue
                     phase = ", ".join(design.get("phases", []) or []) or "N/A"
+                    study_type = design.get("studyType", "")  # INTERVENTIONAL / OBSERVATIONAL
                     overall_status = status.get("overallStatus", "")
                     lead_sponsor = (sponsor.get("leadSponsor", {}) or {}).get("name", "")
                     conditions = ", ".join(conditions_mod.get("conditions", []) or [])
@@ -106,6 +117,7 @@ class ClinicalTrialsConnector(BaseConnector):
                             metadata={
                                 "nct_id": nct_id,
                                 "phase": phase,
+                                "study_type": study_type,
                                 "status": overall_status,
                                 "sponsor": lead_sponsor,
                             },

@@ -4,7 +4,7 @@ from typing import Optional
 from uuid import uuid4
 
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, Numeric, SmallInteger, String, Text, UniqueConstraint
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from models.base import Base
@@ -38,8 +38,9 @@ class Intent(str, enum.Enum):
     complaint = "complaint"
     question = "question"
     purchase_intent = "purchase_intent"
-    comparison = "comparison"
+    comparison = "comparison"          # incl. "A vs B" molecule/brand comparisons
     recommendation = "recommendation"
+    reimbursement = "reimbursement"    # B3 — reimbursement / RIZIV / molecule-cost queries
     other = "other"
 
 
@@ -103,6 +104,10 @@ class Mention(Base):
     )
     brand_name: Mapped[Optional[str]] = mapped_column(String(256), nullable=True, index=True)
     product_name: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    # Source-specific structured payload from the connector (e.g. openFDA reaction
+    # terms, clinical-trial phase/status). Kept as JSONB so we can aggregate on it
+    # without parsing free text.
+    raw_metadata: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
 
     source: Mapped[Optional["DataSource"]] = relationship("DataSource")
     entities: Mapped[list["MentionEntity"]] = relationship(

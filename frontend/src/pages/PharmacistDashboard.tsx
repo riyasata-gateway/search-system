@@ -3,6 +3,11 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "../api/client";
 import { TrendingUp, Package, AlertCircle, Download, CheckCircle, X, Search, Loader2, ShoppingCart, AlertTriangle } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
+import FrameworkKpiSection from "../components/FrameworkKpiSection";
+import BrandPicker, { type PickerBrand } from "../components/BrandPicker";
+import ExportPdfButton from "../components/ExportPdfButton";
+import RoleBanner from "../components/RoleBanner";
+import { useAuth } from "../hooks/useAuth";
 
 function useDashboard() {
   return useQuery({
@@ -83,8 +88,15 @@ export default function PharmacistDashboard() {
   const { data: dashboard, isLoading } = useDashboard();
   const { data: recommendations } = useRecommendations("pending");
   const queryClient = useQueryClient();
+  const { user } = useAuth();
   const [drugInput, setDrugInput] = useState("");
   const [drugQuery, setDrugQuery] = useState("");
+
+  // Brand picker — any of the ~2k classified brands, organised by category.
+  const [brandId, setBrandId] = useState<number | null>(null);
+  const [activeBrand, setActiveBrand] = useState<PickerBrand | null>(null);
+  // Admins on this page view-as pharmacist; pharmacists are locked server-side.
+  const frameworkRole = user?.role === "admin" ? "pharmacist" : undefined;
 
   const updateAction = useMutation({
     mutationFn: ({ id, status }: { id: number; status: string }) =>
@@ -131,13 +143,18 @@ export default function PharmacistDashboard() {
   };
 
   return (
-    <div className="space-y-6">
+    <div id="pharmacist-export" className="space-y-6">
+      <RoleBanner />
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">{dashboard?.pharmacy_name ?? "My Pharmacy"}</h1>
           <p className="text-sm text-gray-500">{dashboard?.country} · Pharmacist Intelligence</p>
         </div>
         <div className="flex gap-2">
+          <ExportPdfButton
+            targetId="pharmacist-export"
+            filename={`Pharmacist Dashboard — ${dashboard?.pharmacy_name ?? "pharmacy"}.pdf`}
+          />
           <button
             onClick={() => handleExport("csv")}
             className="flex items-center gap-1.5 text-sm px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
@@ -167,6 +184,28 @@ export default function PharmacistDashboard() {
             <p className="text-3xl font-bold text-gray-900">{value}</p>
           </div>
         ))}
+      </div>
+
+      {/* Brand intelligence — pick any classified brand by category */}
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-bold text-gray-900">Brand intelligence</h2>
+            <p className="text-sm text-gray-500">Pick a brand by category to see your pharmacist KPIs and patient signals.</p>
+          </div>
+          <BrandPicker
+            value={brandId}
+            selectedBrand={activeBrand}
+            onSelect={(b) => { setBrandId(b.id); setActiveBrand(b); }}
+          />
+        </div>
+        {activeBrand && !activeBrand.has_data && (
+          <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-2.5 text-sm text-amber-800">
+            No data linked to <strong>{activeBrand.name}</strong> yet — KPIs that depend on reviews or
+            ingested signals will read “Connect feed” until the corpus grows.
+          </div>
+        )}
+        <FrameworkKpiSection brandId={brandId} role={frameworkRole} />
       </div>
 
       {trendData.length > 0 && (
