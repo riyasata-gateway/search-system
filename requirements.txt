@@ -1,0 +1,66 @@
+# Python 3.10 or 3.11 required (3.12 works; 3.13+ not yet supported by all NLP deps)
+# ── API ──────────────────────────────────────────────────────────────────────
+fastapi==0.109.2
+uvicorn[standard]==0.29.0
+pydantic==2.7.1
+pydantic-settings==2.2.1
+python-multipart==0.0.9
+
+# ── Auth ─────────────────────────────────────────────────────────────────────
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt==3.2.2
+
+# ── Database ─────────────────────────────────────────────────────────────────
+sqlalchemy[asyncio]==2.0.30
+asyncpg==0.29.0
+alembic==1.13.1
+psycopg2-binary==2.9.9
+
+# ── Cache / Queue broker ─────────────────────────────────────────────────────
+redis==5.0.4
+celery==5.4.0
+celery[redis]==5.4.0
+
+# ── Ingestion connectors ─────────────────────────────────────────────────────
+pytrends==4.9.2
+urllib3<2.0
+praw==7.7.1
+feedparser==6.0.11
+trafilatura==1.9.0
+httpx==0.27.0
+beautifulsoup4==4.12.3
+pandas==2.2.2
+openpyxl==3.1.2
+google-api-python-client==2.130.0
+playwright==1.45.0
+
+# ── NLP / ML ─────────────────────────────────────────────────────────────────
+spacy==3.8.4
+lingua-language-detector==2.0.2
+sentence-transformers==3.0.1
+transformers==4.41.1
+tokenizers==0.19.1
+torch==2.3.0
+
+# ── Vector DB ────────────────────────────────────────────────────────────────
+qdrant-client==1.9.1
+
+# ── LLM (Ollama / Mistral self-hosted) ───────────────────────────────────────
+ollama==0.2.0
+
+# ── OpenAI (AI search + NLP classifier) ──────────────────────────────────────
+openai>=1.35.0
+
+# ── Utilities ────────────────────────────────────────────────────────────────
+cryptography==42.0.8
+python-dotenv==1.0.1
+structlog==24.1.0
+tenacity==8.3.0
+aiohttp==3.9.5
+anyio==4.3.0
+email-validator==2.1.1
+slowapi==0.1.9              # rate limiting
+
+# ── Export (pharmacist reports) ───────────────────────────────────────────────
+reportlab==4.2.0

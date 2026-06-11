@@ -1,0 +1,392 @@
+@import url('https://rsms.me/inter/inter.css');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html { font-family: 'Inter', ui-sans-serif, system-ui, sans-serif; }
+@supports (font-variation-settings: normal) {
+  html { font-family: 'Inter var', 'Inter', ui-sans-serif, system-ui, sans-serif; }
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   DARK "COMMAND CENTER" THEME
+   The whole app lives on a deep navy canvas. Most pages were authored with
+   light Tailwind utilities (bg-white, text-gray-*, border-gray-*); rather than
+   edit every page, we recolour those utilities *within the workspace* so all
+   tabs convert at once and stay consistent. Explicit components (sidebar,
+   login, cards) get richer glass/glow treatment on top.
+   ════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  --bg:        #0b0f1a;   /* canvas */
+  --surface:   rgba(255,255,255,0.045);
+  --surface-2: rgba(255,255,255,0.07);
+  --border:    rgba(148,163,184,0.14);
+  --border-2:  rgba(148,163,184,0.22);
+  --text:      #e7ecf5;
+  --text-2:    #aeb9cd;
+  --text-3:    #74819a;
+  --brand:     #5b86ff;
+  --accent:    #a486ff;
+  --cyan:      #34d3ee;
+}
+
+/* LIGHT theme — pages already use native light Tailwind utilities, so light mode
+   simply omits the `.surface-app` dark reskin (see Layout). Here we only flip the
+   shared chrome tokens (canvas, text ramp, borders) used by body + components. */
+:root[data-theme="light"] {
+  --bg:        #eef2f8;
+  --surface:   rgba(15,23,42,0.03);
+  --surface-2: rgba(15,23,42,0.06);
+  --border:    rgba(15,23,42,0.10);
+  --border-2:  rgba(15,23,42,0.16);
+  --text:      #0f172a;
+  --text-2:    #475569;
+  --text-3:    #94a3b8;
+}
+
+body {
+  @apply antialiased;
+  background-color: var(--bg);
+  color: var(--text);
+  font-feature-settings: "cv11", "ss01";
+  font-variant-numeric: tabular-nums;
+}
+
+/* Workspace canvas — layered radial glows + faint grid for that terminal feel.
+   The two top glows pick up the active role's accent (--role-accent-rgb, set on
+   the app shell in Layout.tsx) so the whole workspace re-tints per role; the
+   foot glow stays cyan as a constant ambient. Falls back to brand blue/violet. */
+.surface-app {
+  background-color: var(--bg);
+  /* No grid (removed per request) — just the role-tinted glows + a cyan foot glow. */
+  background-image:
+    radial-gradient(1100px 600px at 6% -10%, rgba(var(--role-accent-rgb, 91,134,255),0.15), transparent 55%),
+    radial-gradient(900px 600px at 108% 4%, rgba(var(--role-accent-rgb, 164,134,255),0.13), transparent 55%),
+    radial-gradient(700px 500px at 50% 120%, rgba(52,211,238,0.08), transparent 60%);
+}
+
+/* Light workspace canvas — near-white with a soft role-tinted glow + faint grid,
+   mirroring the dark canvas's ambience. Used instead of `.surface-app` in light
+   mode, so none of the dark `.surface-app .*` overrides apply and pages render in
+   their native light Tailwind utilities. */
+.surface-light {
+  background-color: var(--bg);
+  /* No grid — just a soft role-tinted wash at the top corners. */
+  background-image:
+    radial-gradient(1100px 600px at 6% -10%, rgba(var(--role-accent-rgb, 91,134,255),0.09), transparent 55%),
+    radial-gradient(900px 600px at 108% 4%, rgba(var(--role-accent-rgb, 164,134,255),0.06), transparent 55%);
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   LIGHT-MODE page reskin — symmetric to the dark `.surface-app` layer above.
+   Half the components were authored dark-first (text-white, slate-200/300/400,
+   translucent-white fills/borders, neon -200/-300 status text) and have ~zero
+   contrast on the light canvas. Remap those dark idioms to light-readable
+   values. Native light Tailwind (bg-white, text-gray-900, pastel -50/-100
+   pills) is already correct and left untouched.
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* translucent-white panel fills → subtle dark-tint fills (visible on white) */
+.surface-light .bg-white\/5,
+.surface-light .bg-white\/10,
+.surface-light .bg-white\/15,
+.surface-light .bg-white\/20,
+.surface-light .bg-white\/\[0\.02\],
+.surface-light .bg-white\/\[0\.03\],
+.surface-light .bg-white\/\[0\.04\],
+.surface-light .bg-white\/\[0\.045\],
+.surface-light .bg-white\/\[0\.05\],
+.surface-light .bg-white\/\[0\.07\],
+.surface-light .bg-white\/\[0\.08\] { background-color: rgba(15,23,42,0.04) !important; }
+
+/* hover translucent fills */
+.surface-light .hover\:bg-white\/5:hover,
+.surface-light .hover\:bg-white\/10:hover,
+.surface-light .hover\:bg-white\/\[0\.05\]:hover,
+.surface-light .hover\:bg-white\/\[0\.07\]:hover { background-color: rgba(15,23,42,0.07) !important; }
+
+/* white borders/rings → light slate strokes */
+.surface-light .border-white\/5,
+.surface-light .border-white\/10,
+.surface-light .border-white\/15,
+.surface-light .border-white\/20,
+.surface-light .ring-white\/10 { border-color: rgba(15,23,42,0.10) !important; }
+
+/* muted slate text → darkened so labels/headers read on white */
+.surface-light .text-slate-100 { color: #1e293b !important; }
+.surface-light .text-slate-200 { color: #334155 !important; }
+.surface-light .text-slate-300 { color: #475569 !important; }
+.surface-light .text-slate-400 { color: #64748b !important; }
+/* slate-500 (#64748b) already reads on white — left as-is */
+
+/* light brand/accent -100/-200 text (e.g. the Upgrade card's "Preview" in
+   text-accent-200, title in text-slate-100) → darker so it reads on white */
+.surface-light .text-accent-100, .surface-light .text-accent-200, .surface-light .text-accent-300 { color: #6d28d9 !important; }
+.surface-light .text-brand-100,  .surface-light .text-brand-200,  .surface-light .text-brand-300  { color: #1d4ed8 !important; }
+.surface-light .text-blue-100,   .surface-light .text-blue-200                                    { color: #1d4ed8 !important; }
+.surface-light .text-amber-100                                                                     { color: #b45309 !important; }
+
+/* neon -200/-300 status text (tuned for dark) → darker so it reads on white */
+.surface-light .text-emerald-200, .surface-light .text-emerald-300 { color: #047857 !important; }
+.surface-light .text-amber-200,   .surface-light .text-amber-300   { color: #b45309 !important; }
+.surface-light .text-rose-200,    .surface-light .text-rose-300,
+.surface-light .text-red-100,     .surface-light .text-red-200,    .surface-light .text-red-300     { color: #b91c1c !important; }
+.surface-light .text-orange-100,  .surface-light .text-orange-200, .surface-light .text-orange-300  { color: #c2410c !important; }
+.surface-light .text-sky-300,     .surface-light .text-cyan-300    { color: #0e7490 !important; }
+.surface-light .text-violet-300,  .surface-light .text-purple-300  { color: #6d28d9 !important; }
+.surface-light .text-blue-300                                       { color: #1d4ed8 !important; }
+
+/* white text → dark, EXCEPT on solid/gradient coloured surfaces (buttons,
+   badges) where white is correct. Preservation rules below win on specificity. */
+.surface-light .text-white { color: #0f172a !important; }
+.surface-light [class*="bg-gradient-to"].text-white, .surface-light [class*="bg-gradient-to"] .text-white,
+.surface-light [class*="bg-blue-6"].text-white,  .surface-light [class*="bg-blue-6"] .text-white,
+.surface-light [class*="bg-blue-7"].text-white,  .surface-light [class*="bg-blue-7"] .text-white,
+.surface-light [class*="bg-brand-"].text-white,  .surface-light [class*="bg-brand-"] .text-white,
+.surface-light [class*="bg-accent-"].text-white, .surface-light [class*="bg-accent-"] .text-white,
+.surface-light [class*="bg-purple-"].text-white, .surface-light [class*="bg-purple-"] .text-white,
+.surface-light [class*="bg-violet-"].text-white, .surface-light [class*="bg-violet-"] .text-white,
+.surface-light [class*="bg-emerald-"].text-white,.surface-light [class*="bg-emerald-"] .text-white,
+.surface-light [class*="bg-red-6"].text-white,   .surface-light [class*="bg-red-6"] .text-white,
+.surface-light [class*="bg-red-7"].text-white,   .surface-light [class*="bg-red-7"] .text-white,
+.surface-light [class*="bg-indigo-"].text-white, .surface-light [class*="bg-indigo-"] .text-white {
+  color: #ffffff !important;
+}
+
+/* ── Glass card: the de-facto card in every page is `bg-white rounded-xl border`.
+   Promote it to a frosted dark panel with a soft top highlight + glow on hover. */
+.surface-app .bg-white {
+  background: linear-gradient(180deg, rgba(255,255,255,0.055), rgba(255,255,255,0.02)) !important;
+  border-color: var(--border) !important;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 1px 0 0 rgba(255,255,255,0.05) inset, 0 18px 40px -28px rgba(0,0,0,0.8);
+}
+.surface-app .bg-white:hover { border-color: var(--border-2) !important; }
+
+/* Secondary fills */
+.surface-app .bg-slate-50,
+.surface-app .bg-gray-50    { background-color: rgba(255,255,255,0.03) !important; }
+.surface-app .bg-slate-100,
+.surface-app .bg-gray-100   { background-color: rgba(255,255,255,0.07) !important; }
+
+/* Text ramp */
+.surface-app .text-gray-900, .surface-app .text-slate-900 { color: var(--text) !important; }
+.surface-app .text-gray-800, .surface-app .text-slate-800 { color: var(--text) !important; }
+.surface-app .text-gray-700, .surface-app .text-slate-700 { color: #d3dbea !important; }
+.surface-app .text-gray-600, .surface-app .text-slate-600 { color: var(--text-2) !important; }
+.surface-app .text-gray-500, .surface-app .text-slate-500 { color: var(--text-2) !important; }
+.surface-app .text-gray-400, .surface-app .text-slate-400 { color: var(--text-3) !important; }
+.surface-app .text-gray-300, .surface-app .text-slate-300 { color: var(--text-3) !important; }
+
+/* Borders + dividers */
+.surface-app .border-gray-200, .surface-app .border-slate-200,
+.surface-app .border-gray-100, .surface-app .border-slate-100,
+.surface-app .border-gray-300 { border-color: var(--border) !important; }
+.surface-app .divide-gray-50  > :not([hidden]) ~ :not([hidden]),
+.surface-app .divide-gray-100 > :not([hidden]) ~ :not([hidden]),
+.surface-app .divide-slate-50 > :not([hidden]) ~ :not([hidden]) {
+  border-color: var(--border) !important;
+}
+
+/* Pastel status pills → translucent neon tints that read on dark */
+.surface-app .bg-green-100, .surface-app .bg-emerald-50, .surface-app .bg-emerald-100 { background-color: rgba(34,197,94,0.16) !important; }
+.surface-app .text-green-700, .surface-app .text-emerald-700, .surface-app .text-green-600 { color: #4ade80 !important; }
+.surface-app .bg-red-100 { background-color: rgba(239,68,68,0.16) !important; }
+.surface-app .text-red-700, .surface-app .text-red-600, .surface-app .text-red-500 { color: #fb7185 !important; }
+.surface-app .bg-amber-100, .surface-app .bg-amber-50 { background-color: rgba(245,158,11,0.16) !important; }
+.surface-app .text-amber-700, .surface-app .text-amber-800 { color: #fbbf24 !important; }
+.surface-app .bg-blue-100, .surface-app .bg-blue-50 { background-color: rgba(91,134,255,0.16) !important; }
+.surface-app .text-blue-700, .surface-app .text-blue-600, .surface-app .text-blue-900 { color: #8aa6ff !important; }
+.surface-app .bg-purple-100 { background-color: rgba(164,134,255,0.18) !important; }
+.surface-app .text-purple-700, .surface-app .text-purple-600 { color: #c4b1ff !important; }
+
+/* Hover affordances */
+.surface-app .hover\:bg-gray-100:hover, .surface-app .hover\:bg-slate-100:hover { background-color: rgba(255,255,255,0.07) !important; }
+.surface-app .hover\:bg-blue-50:hover { background-color: rgba(91,134,255,0.14) !important; }
+.surface-app .hover\:bg-red-50:hover { background-color: rgba(239,68,68,0.14) !important; }
+
+/* Light gradient panels (e.g. weekly-summary from-blue-50 to-indigo-50) */
+.surface-app .from-blue-50 { --tw-gradient-from: rgba(91,134,255,0.12) var(--tw-gradient-from-position) !important; }
+.surface-app .to-indigo-50 { --tw-gradient-to:   rgba(164,134,255,0.10) var(--tw-gradient-to-position) !important; }
+.surface-app .from-blue-50.to-indigo-50,
+.surface-app .border-blue-100 { border-color: rgba(91,134,255,0.22) !important; }
+
+/* ── Remaining light pastel fills the ramp above missed. The block above only
+   recoloured the -100 variants; the -50 fills (and brand/indigo tints) stayed
+   light, so any recoloured text on them turned invisible — e.g. a light
+   `text-red-700` on a still-light `bg-red-50`. Map every leftover pastel fill,
+   text tint and border to the dark scheme so nothing reads light-on-light. */
+.surface-app .bg-red-50     { background-color: rgba(239,68,68,0.13) !important; }
+.surface-app .bg-green-50   { background-color: rgba(34,197,94,0.13) !important; }
+.surface-app .bg-yellow-50,
+.surface-app .bg-yellow-100 { background-color: rgba(245,158,11,0.15) !important; }
+.surface-app .bg-indigo-50,
+.surface-app .bg-brand-50   { background-color: rgba(91,134,255,0.13) !important; }
+.surface-app .bg-indigo-100,
+.surface-app .bg-brand-100  { background-color: rgba(91,134,255,0.18) !important; }
+
+/* Matching text tints (dark pastel text → light neon so it reads on dark) */
+.surface-app .text-yellow-800, .surface-app .text-yellow-700,
+.surface-app .text-yellow-600, .surface-app .text-yellow-500,
+.surface-app .text-amber-600,  .surface-app .text-amber-500  { color: #fbbf24 !important; }
+.surface-app .text-indigo-800, .surface-app .text-indigo-700, .surface-app .text-indigo-600,
+.surface-app .text-brand-800,  .surface-app .text-brand-700,  .surface-app .text-brand-600, .surface-app .text-brand-500,
+.surface-app .text-blue-800,   .surface-app .text-blue-500,   .surface-app .text-blue-400 { color: #8aa6ff !important; }
+.surface-app .text-green-800,  .surface-app .text-green-500,
+.surface-app .text-emerald-600, .surface-app .text-emerald-500 { color: #4ade80 !important; }
+.surface-app .text-red-800,    .surface-app .text-red-900     { color: #fb7185 !important; }
+.surface-app .text-purple-800, .surface-app .text-purple-500  { color: #c4b1ff !important; }
+
+/* Coloured pastel borders (-200/-300) → subtle tinted strokes */
+.surface-app .border-red-200    { border-color: rgba(239,68,68,0.30) !important; }
+.surface-app .border-green-200, .surface-app .border-emerald-200 { border-color: rgba(34,197,94,0.30) !important; }
+.surface-app .border-yellow-200, .surface-app .border-amber-200  { border-color: rgba(245,158,11,0.30) !important; }
+.surface-app .border-indigo-100, .surface-app .border-indigo-200,
+.surface-app .border-indigo-300, .surface-app .border-indigo-400,
+.surface-app .border-brand-200,  .surface-app .border-brand-300,
+.surface-app .border-blue-200   { border-color: rgba(91,134,255,0.30) !important; }
+.surface-app .border-purple-200 { border-color: rgba(164,134,255,0.30) !important; }
+
+/* Hover fills/borders for the same pastels */
+.surface-app .hover\:bg-green-50:hover   { background-color: rgba(34,197,94,0.14) !important; }
+.surface-app .hover\:bg-indigo-100:hover { background-color: rgba(91,134,255,0.20) !important; }
+.surface-app .hover\:bg-brand-50:hover   { background-color: rgba(91,134,255,0.16) !important; }
+.surface-app .hover\:border-indigo-300:hover,
+.surface-app .hover\:border-indigo-400:hover,
+.surface-app .hover\:border-brand-300:hover { border-color: rgba(91,134,255,0.45) !important; }
+
+/* Orange / sky / violet families (e.g. Alerts "high" severity = bg-orange-50)
+   weren't in any ramp above, so they rendered as bright light boxes on the
+   dark canvas. Map them too. Solid saturated fills (violet-600/700 buttons)
+   are intentionally left alone. */
+.surface-app .bg-orange-50    { background-color: rgba(249,115,22,0.13) !important; }
+.surface-app .bg-orange-100   { background-color: rgba(249,115,22,0.18) !important; }
+.surface-app .text-orange-800, .surface-app .text-orange-700,
+.surface-app .text-orange-600, .surface-app .text-orange-500 { color: #fdba74 !important; }
+.surface-app .border-orange-200 { border-color: rgba(249,115,22,0.30) !important; }
+
+.surface-app .bg-sky-50       { background-color: rgba(52,211,238,0.12) !important; }
+.surface-app .text-sky-700, .surface-app .text-sky-600, .surface-app .text-sky-500 { color: #67e8f9 !important; }
+.surface-app .border-sky-200  { border-color: rgba(52,211,238,0.30) !important; }
+
+.surface-app .bg-violet-50    { background-color: rgba(164,134,255,0.13) !important; }
+.surface-app .text-violet-900, .surface-app .text-violet-700, .surface-app .text-violet-600,
+.surface-app .text-violet-500, .surface-app .text-violet-400 { color: #c4b1ff !important; }
+.surface-app .border-violet-200 { border-color: rgba(164,134,255,0.30) !important; }
+
+/* Inputs / selects / textareas → dark fields */
+.surface-app input,
+.surface-app select,
+.surface-app textarea {
+  background-color: rgba(2,6,23,0.55) !important;
+  border-color: var(--border) !important;
+  color: var(--text) !important;
+}
+.surface-app input::placeholder, .surface-app textarea::placeholder { color: var(--text-3) !important; }
+.surface-app select option { background-color: #121829; color: var(--text); }
+
+/* Recharts → light ticks, faint grid, dark tooltips */
+.surface-app .recharts-text,
+.surface-app .recharts-cartesian-axis-tick text { fill: var(--text-3) !important; }
+.surface-app .recharts-cartesian-grid line { stroke: rgba(148,163,184,0.12) !important; }
+.surface-app .recharts-legend-item-text { color: var(--text-2) !important; }
+.surface-app .recharts-default-tooltip {
+  background: rgba(12,17,30,0.95) !important;
+  border: 1px solid var(--border-2) !important;
+  border-radius: 10px !important;
+  color: var(--text) !important;
+}
+/* Recharts colours tooltip rows/labels with its own inline colours (the slice
+   colour for items, dark #333 for the label) — unreadable on the dark tooltip.
+   Force them light so every chart's hover text stays visible. */
+.surface-app .recharts-tooltip-label,
+.surface-app .recharts-tooltip-item-list .recharts-tooltip-item,
+.surface-app .recharts-tooltip-item-name,
+.surface-app .recharts-tooltip-item-value,
+.surface-app .recharts-tooltip-item-separator { color: var(--text) !important; }
+
+/* Keep vivid gradient CTAs/brand marks punchy (don't dim them) */
+.surface-app .bg-gradient-to-r.from-blue-600,
+.surface-app .bg-gradient-to-br.from-brand-500 { box-shadow: 0 10px 30px -10px rgba(91,134,255,0.5); }
+
+/* ── Reusable rich components ──────────────────────────────────────────── */
+.glass {
+  background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.025));
+  border: 1px solid var(--border);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+.glow-brand  { box-shadow: 0 0 0 1px rgba(91,134,255,0.25), 0 10px 34px -12px rgba(91,134,255,0.45); }
+.glow-accent { box-shadow: 0 0 0 1px rgba(164,134,255,0.25), 0 10px 34px -12px rgba(164,134,255,0.5); }
+.text-gradient {
+  background: linear-gradient(90deg, #8aa6ff, #c4b1ff 60%, #6ee7ff);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+
+/* Refined dark scrollbar */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background-color: rgba(148,163,184,0.22);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background-color: rgba(148,163,184,0.38); }
+
+/* Focus ring */
+:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(91,134,255,0.45);
+  border-radius: 8px;
+}
+
+/* Skeleton shimmer block (dark) */
+.skeleton {
+  background: linear-gradient(90deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.10) 50%, rgba(255,255,255,0.04) 100%);
+  background-size: 936px 100%;
+  animation: shimmer 1.4s ease-in-out infinite linear;
+}
+
+/* Card hover-lift (dark glow) */
+.lift { transition: transform 200ms ease, box-shadow 200ms ease, border-color 200ms ease; }
+.lift:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 0 0 1px rgba(91,134,255,0.22), 0 18px 40px -18px rgba(91,134,255,0.35);
+}
+
+/* Sentiment accent bar (left edge of result cards) */
+.accent-positive { box-shadow: inset 4px 0 0 0 #22c55e; }
+.accent-neutral  { box-shadow: inset 4px 0 0 0 #64748b; }
+.accent-negative { box-shadow: inset 4px 0 0 0 #ef4444; }
+.accent-risk     { box-shadow: inset 4px 0 0 0 #ef4444, 0 0 0 1px rgba(239, 68, 68, 0.25); }
+
+/* ════════════════════════════════════════════════════════════════════════
+   LIGHT-THEME overrides for the shared rich chrome (the dark `.surface-app .*`
+   page reskin is simply not applied in light mode — see Layout).
+   ════════════════════════════════════════════════════════════════════════ */
+:root[data-theme="light"] .glass {
+  background: linear-gradient(180deg, #ffffff, #f8fafc);
+  border: 1px solid var(--border);
+}
+:root[data-theme="light"] .skeleton {
+  background: linear-gradient(90deg, rgba(15,23,42,0.05) 0%, rgba(15,23,42,0.10) 50%, rgba(15,23,42,0.05) 100%);
+  background-size: 936px 100%;
+}
+:root[data-theme="light"] ::-webkit-scrollbar-thumb {
+  background-color: rgba(15,23,42,0.18);
+}
+:root[data-theme="light"] ::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(15,23,42,0.30);
+}
+/* The text-gradient mark is tuned for dark; darken its stops so it reads on white */
+:root[data-theme="light"] .text-gradient {
+  background: linear-gradient(90deg, #3f6dff, #885dfa 60%, #0891b2);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+:root[data-theme="light"] .lift:hover {
+  box-shadow: 0 0 0 1px rgba(91,134,255,0.18), 0 18px 40px -20px rgba(15,23,42,0.25);
+}

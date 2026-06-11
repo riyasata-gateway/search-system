@@ -1,0 +1,51 @@
+# Don't check auto-generated stuff into git
+coverage
+build
+junit
+generated
+node_modules
+.nyc_output
+stats.json
+dist
+public/uploads/**
+storybook-static
+
+# Cruft
+.DS_Store
+npm-debug.log
+.idea
+yalc.lock
+.yalc
+.venv
+.claude
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Secrets & local env
+.env
+.env.local
+
+# Runtime / local scratch
+celerybeat-schedule
+summary
+logs/
+data/
+# SAM bulk export (large; regenerate via scripts, keep only derived brand_inn.json)
+data/sam/*.zip
+data/sam/*.xml
+data/farmaline/*.csv
+farmaline_*.zip
+
+# Data dumps, generated reports & screenshots at repo root (regenerate via scripts).
+# Root-anchored so legitimate frontend assets stay tracked.
+/*.xlsx
+/*.zip
+/*.pdf
+/*.docx
+/*.png
+/*.jpg
+/*.jpeg

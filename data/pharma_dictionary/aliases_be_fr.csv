@@ -1,0 +1,63 @@
+product_name,alias,language,country,alias_type
+Dafalgan 1g,dafalgan,en,,brand
+Dafalgan 1g,dafalgan 1g,fr,,brand
+Dafalgan 1g,dafalgen,en,,misspelling
+Dafalgan 1g,dafalgane,fr,,misspelling
+Dafalgan 500mg,dafalgan 500,fr,,brand
+Doliprane 1000mg,doliprane,fr,FR,brand
+Doliprane 1000mg,doliprane 1000,fr,FR,brand
+Doliprane 1000mg,doloprane,fr,FR,misspelling
+Nurofen 400mg,nurofen,en,,brand
+Nurofen 400mg,nurofen 400,en,,brand
+Nurofen 400mg,ibuprofen,en,,ingredient
+Nurofen 400mg,ibuprofène,fr,,ingredient
+Advil 400mg,advil,en,,brand
+Advil 400mg,ibuprofen,en,FR,ingredient
+Voltaren Emulgel,voltaren,en,,brand
+Voltaren Emulgel,voltarène,fr,,local_name
+Voltaren Emulgel,diclofenac,en,,ingredient
+Voltaren Emulgel,diclofénac,fr,,ingredient
+Imodium Capsule,imodium,en,,brand
+Imodium Capsule,lopéramide,fr,,ingredient
+Imodium Capsule,loperamide,en,,ingredient
+Enterogermina 2B,enterogermina,en,,brand
+Enterogermina 2B,entérogermina,fr,,brand
+Enterogermina 2B,probiotique,fr,,category_term
+Enterogermina 2B,probiotic,en,,category_term
+Lacteol 170mg,lacteol,fr,FR,brand
+Lacteol 170mg,lactéol,fr,FR,brand
+Lacteol 170mg,lactobacille,fr,,ingredient
+Clarityne 10mg,clarityne,en,,brand
+Clarityne 10mg,claritine,en,,misspelling
+Clarityne 10mg,loratadine,en,,ingredient
+Clarityne 10mg,loratadine,fr,,ingredient
+Zyrtec 10mg,zyrtec,en,,brand
+Zyrtec 10mg,cetirizine,en,,ingredient
+Zyrtec 10mg,cétirizine,fr,,ingredient
+Telfast 120mg,telfast,fr,FR,brand
+Telfast 120mg,fexofenadine,en,,ingredient
+Telfast 120mg,fexofénadine,fr,,ingredient
+Vitamine C Bayer 1000mg,vitamine c,fr,,category_term
+Vitamine C Bayer 1000mg,vitamin c,en,,category_term
+Vitamine C Bayer 1000mg,ascorbic acid,en,,ingredient
+Vitamine C Bayer 1000mg,acide ascorbique,fr,,ingredient
+Supradyn Energie,supradyn,en,,brand
+Supradyn Energie,multivitamine,fr,,category_term
+Supradyn Energie,multivitamin,en,,category_term
+Magnesium Diasporal 300,magnesium diasporal,en,,brand
+Magnesium Diasporal 300,magnésium diasporal,fr,,brand
+Magnesium Diasporal 300,magnesium,en,,ingredient
+Magnesium Diasporal 300,magnésium,fr,,ingredient
+Magnesium Diasporal 300,magnesium sleep,en,,category_term
+Omega-3 Forte 1000mg,omega 3,en,,category_term
+Omega-3 Forte 1000mg,omega-3,en,,ingredient
+Omega-3 Forte 1000mg,oméga 3,fr,,ingredient
+Bepanthen Creme,bepanthen,en,,brand
+Bepanthen Creme,bepanthen crème,fr,,brand
+Bepanthen Creme,dexpanthenol,en,,ingredient
+Bepanthen Creme,dexpanthénol,fr,,ingredient
+Biafine 93g,biafine,fr,FR,brand
+Biafine 93g,trolamine,en,,ingredient
+Eucerin Intensive,eucerin,en,,brand
+Eucerin Intensive,urea cream,en,,category_term
+Eucerin Intensive,crème urée,fr,,category_term

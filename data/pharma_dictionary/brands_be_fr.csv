@@ -1,0 +1,32 @@
+name,manufacturer,country,is_competitor,brand_group_name,category,kpi_roles
+La Roche-Posay,L'Oréal,"BE,FR",false,L'Oréal,Dermocosmetics,marketing|brand_manager
+Avène,Pierre Fabre,"BE,FR",false,Pierre Fabre,Dermocosmetics,marketing|brand_manager
+Vichy,L'Oréal,"BE,FR",false,L'Oréal,Dermocosmetics,marketing|brand_manager
+Bioderma,NAOS,"BE,FR",false,NAOS,Dermocosmetics,marketing|brand_manager
+CeraVe,L'Oréal,"BE,FR",false,L'Oréal,Dermocosmetics,marketing
+Eucerin,Beiersdorf,"BE,FR",false,Beiersdorf,Dermocosmetics,brand_manager|marketing
+Caudalie,Caudalie,"BE,FR",false,Caudalie,Dermocosmetics,marketing
+ISDIN,ISDIN,"BE,FR",false,ISDIN,Dermocosmetics (sun),brand_manager
+Dafalgan,Viatris / Upjohn,"BE,FR",false,Viatris,OTC analgesic,pharmacist|brand_manager
+Perdolan,Kenvue (J&J),BE,false,Kenvue,OTC analgesic,pharmacist|brand_manager
+Nurofen,Reckitt,"BE,FR",false,Reckitt,OTC analgesic,brand_manager|pharmacist
+Voltaren,Haleon,"BE,FR",false,Haleon,OTC topical NSAID,brand_manager
+Strepsils,Reckitt,"BE,FR",false,Reckitt,OTC throat,pharmacist|marketing
+Imodium,Kenvue (J&J),"BE,FR",false,Kenvue,OTC GI,pharmacist|brand_manager
+Bepanthol / Bepanthen,Bayer,"BE,FR",false,Bayer,Skin / wound care,brand_manager
+Fenistil,Haleon,"BE,FR",false,Haleon,OTC antihistamine,pharmacist|marketing
+Bion3,P&G,"BE,FR",false,P&G,Supplements,marketing|brand_manager
+D-Cure (vitamin D),SMB Laboratoires (BE),BE,false,SMB Laboratoires,Supplements,pharmacist|brand_manager
+Davitamon,Perrigo / Omega Pharma,BE,false,Perrigo,Supplements,marketing
+Solgar,Nestlé Health Science,"BE,FR",false,Nestlé Health Science,Supplements,brand_manager|marketing
+Metagenics,Metagenics,BE,false,Metagenics,Supplements (HCP),brand_manager
+Aptamil,Danone / Nutricia,"BE,FR",false,Danone,Infant nutrition,pharmacist|brand_manager
+Mustela,Expanscience,"BE,FR",false,Expanscience,Baby care,marketing
+"UCB brands (Keppra, Bimzelx)",UCB (BE),BE,false,UCB,Rx specialty,brand_manager
+Tilman (phyto),Tilman (BE),BE,false,Tilman,Phytotherapy,pharmacist|marketing
+Rennie,Bayer,"BE,FR",false,Bayer,OTC GI,pharmacist|brand_manager
+Gaviscon,Reckitt,"BE,FR",false,Reckitt,OTC GI,pharmacist|brand_manager
+Enterol,Biocodex,"BE,FR",false,Biocodex,OTC GI,pharmacist|brand_manager
+Otrivine,Haleon,"BE,FR",false,Haleon,OTC cold / nasal,pharmacist|marketing
+Arkopharma,Arkopharma,"BE,FR",false,Arkopharma,Supplements (phyto),brand_manager|marketing
+Puressentiel,Puressentiel,"BE,FR",false,Puressentiel,Aromatherapy / supplements,marketing|brand_manager
