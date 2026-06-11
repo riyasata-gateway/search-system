@@ -1,12 +1,9 @@
-import smtplib
 from datetime import datetime, timezone
-from email.mime.text import MIMEText
 from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from core.config import settings
 from core.event_bus import Channel, publish_event
 from core.logging import get_logger
 from models.adverse_event import AdverseEventCandidate, AdverseEventReviewStatus
@@ -121,48 +118,5 @@ def _handle_adverse_event(db: Session, mention_id: str, classification: dict) ->
         description="Adverse event candidate detected. Requires human pharmacovigilance review.",
         payload={"mention_id": mention_id, "candidate_id": candidate.id},
     )
-
-    _send_pharmacovigilance_notification(mention_id, candidate.id)
-
-
-def _send_pharmacovigilance_notification(mention_id: str, candidate_id: int) -> None:
-    """
-    Send email notification to pharmacovigilance team.
-    Implements the 'route to pharmacovigilance review' requirement.
-    """
-    if not settings.SMTP_HOST:
-        logger.warning(
-            "pharmacovigilance_email_skipped",
-            reason="SMTP_HOST not configured",
-            mention_id=mention_id,
-        )
-        return
-
-    try:
-        body = (
-            f"TDAH (by PharmaWatch) — Adverse Event Alert\n\n"
-            f"A new adverse event candidate has been detected and requires your review.\n\n"
-            f"Candidate ID: {candidate_id}\n"
-            f"Mention ID: {mention_id}\n\n"
-            f"Please log in to the TDAH review queue to assess this report.\n"
-            f"IMPORTANT: The system has flagged this for your attention. "
-            f"All final decisions must be made by a qualified pharmacovigilance reviewer."
-        )
-        msg = MIMEText(body)
-        msg["Subject"] = f"[TDAH] Adverse Event Candidate #{candidate_id} — Review Required"
-        msg["From"] = settings.SMTP_FROM
-        msg["To"] = settings.PHARMACOVIGILANCE_EMAIL
-
-        with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
-            server.starttls()
-            if settings.SMTP_USER and settings.SMTP_PASSWORD:
-                server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-            server.send_message(msg)
-
-        logger.info(
-            "pharmacovigilance_notification_sent",
-            candidate_id=candidate_id,
-            to=settings.PHARMACOVIGILANCE_EMAIL,
-        )
-    except Exception as exc:
-        logger.error("pharmacovigilance_notification_failed", error=str(exc), candidate_id=candidate_id)
+    # Adverse-event candidates surface in the in-app review queue (the Alert row
+    # above). Email/SMTP routing was removed — review happens in the dashboard.

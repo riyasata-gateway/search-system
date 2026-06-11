@@ -55,7 +55,7 @@ async def generate_weekly_summary(
 
     Feeds the LLM *computed facts with comparisons* (not raw totals), so the brief
     reports real movement and a recommendation instead of paraphrasing counts.
-    Summarisation only — never a medical decision. EU-region Ollama, OpenAI fallback.
+    Summarisation only — never a medical decision. Uses OpenAI.
     """
     from datetime import timedelta
     from sqlalchemy import text

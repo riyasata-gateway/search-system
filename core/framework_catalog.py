@@ -208,11 +208,11 @@ TOP_BRANDS: List[Dict] = [
 # (None when the source is a proprietary feed we don't yet ingest).
 DATA_SOURCES: List[Dict] = [
     {"name": "Google Trends", "tier": "A", "what_data": "Search interest by brand / molecule / symptom; FR vs NL regional split",
-     "frequency": "Real-time / daily", "access": "Free", "dia_layer": "Detect", "connector": "google_trends", "available": True},
+     "frequency": "Real-time / daily", "access": "Free", "dia_layer": "Detect", "connector": None, "available": False},
     {"name": "Social media (Meta, X, TikTok, Instagram)", "tier": "A", "what_data": "Mentions, sentiment, reach, share of voice, creator activity",
-     "frequency": "Real-time", "access": "Free / API tiers", "dia_layer": "Detect", "connector": "licensed_api", "available": False},
+     "frequency": "Real-time", "access": "Free / API tiers", "dia_layer": "Detect", "connector": None, "available": False},
     {"name": "Reddit / patient forums", "tier": "A", "what_data": "Unmet needs, off-label chatter, side-effect complaints (qualitative)",
-     "frequency": "Continuous", "access": "Free", "dia_layer": "Detect", "connector": "reddit", "available": True},
+     "frequency": "Continuous", "access": "Free", "dia_layer": "Detect", "connector": None, "available": False},
     {"name": "Online pharmacy reviews (farmaline, medi-market, newpharma, viata, 24pharma)", "tier": "A",
      "what_data": "Star ratings, review volume, review sentiment per product page",
      "frequency": "Scrape daily", "access": "Free (scrape)", "dia_layer": "Detect / Interpret", "connector": "pharmacy_import", "available": True},

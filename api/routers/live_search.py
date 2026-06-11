@@ -167,39 +167,6 @@ async def _run_forum(keywords: List[str], countries: List[str], languages: List[
         return []
 
 
-async def _run_google_trends(keywords: List[str], countries: List[str], languages: List[str]):
-    try:
-        from ingestion.connectors.google_trends import GoogleTrendsConnector
-        c = GoogleTrendsConnector()
-        loop = asyncio.get_running_loop()
-        return await asyncio.wait_for(
-            loop.run_in_executor(
-                None,
-                lambda: asyncio.run(c.collect(keywords, countries, languages)),
-            ),
-            timeout=8.0,
-        )
-    except Exception:
-        return []
-
-
-async def _run_reddit(keywords: List[str], countries: List[str], languages: List[str]):
-    try:
-        from ingestion.connectors.reddit import RedditConnector
-        c = RedditConnector()
-        if not c.is_available():
-            return []
-        return await asyncio.wait_for(
-            asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: asyncio.run(c.collect(keywords, countries, languages)),
-            ),
-            timeout=15.0,
-        )
-    except Exception:
-        return []
-
-
 async def _run_wikipedia(keywords: List[str], countries: List[str], languages: List[str]):
     try:
         from ingestion.connectors.wikipedia import WikipediaConnector
@@ -492,8 +459,6 @@ _SOURCE_RUNNERS = {
     "news": _run_web_news,
     "rss": _run_rss,
     "forum": _run_forum,
-    "google_trends": _run_google_trends,
-    "reddit": _run_reddit,
     "wikipedia": _run_wikipedia,
     "pubmed": _run_pubmed,
     "youtube": _run_youtube,
@@ -522,8 +487,6 @@ def _missing_key_reason(source: str) -> Optional[str]:
     from core.config import settings
     if source == "youtube" and not settings.YOUTUBE_API_KEY:
         return "YOUTUBE_API_KEY is not configured in .env"
-    if source == "reddit" and not (settings.REDDIT_CLIENT_ID and settings.REDDIT_CLIENT_SECRET):
-        return "REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET are not configured in .env"
     return None
 
 
@@ -532,7 +495,7 @@ def _missing_key_reason(source: str) -> Optional[str]:
 async def live_search(
     background_tasks: BackgroundTasks,
     q: str = Query(..., min_length=2, description="Brand, drug, or keyword to search live"),
-    sources: Optional[str] = Query(None, description="Comma-separated: news,rss,forum,google_trends,reddit,wikipedia,pubmed,youtube,clinical_trials,openfda,app_store,safety_gate"),
+    sources: Optional[str] = Query(None, description="Comma-separated: news,rss,forum,wikipedia,pubmed,youtube,clinical_trials,openfda,app_store,safety_gate"),
     languages: Optional[str] = Query("fr,nl,de,en", description="Comma-separated language codes (BE: fr,nl,de + FR: fr; en for fallback)"),
     period: str = Query("all", description="Time window: 7d, 30d, 180d, 365d, all"),
     role: Optional[str] = Query(None, description="Role lens: pharmacist, marketing, brand_manager, admin (admins may view-as any; others locked to own role)"),

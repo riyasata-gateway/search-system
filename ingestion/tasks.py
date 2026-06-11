@@ -255,55 +255,6 @@ def ingest_live_results(self, results: Optional[list] = None):
     return {"saved": total}
 
 
-@shared_task(name="ingestion.tasks.collect_google_trends", bind=True, max_retries=3)
-def collect_google_trends(self, search_topic_id: Optional[int] = None):
-    if not settings.DPIA_PROCESSING_ENABLED:
-        logger.warning("ingestion_blocked", reason="DPIA_PROCESSING_ENABLED=false")
-        return {"status": "blocked", "reason": "DPIA not enabled"}
-
-    from ingestion.connectors.google_trends import GoogleTrendsConnector
-    import asyncio
-
-    keywords, countries, languages, skip = _resolve_collection_params(
-        search_topic_id, "google_trends",
-        ["paracetamol", "ibuprofen", "dafalgan", "probiotique", "antihistamine"],
-    )
-    if skip:
-        return {"status": "skipped", "reason": "source disabled for this topic"}
-
-    connector = GoogleTrendsConnector()
-    raw = asyncio.get_event_loop().run_until_complete(
-        connector.collect(keywords, countries, languages)
-    )
-    saved = _persist_mentions(raw, "google_trends")
-    logger.info("collect_google_trends_done", saved=saved)
-    return {"saved": saved}
-
-
-@shared_task(name="ingestion.tasks.collect_reddit", bind=True, max_retries=3)
-def collect_reddit(self, search_topic_id: Optional[int] = None):
-    if not settings.DPIA_PROCESSING_ENABLED:
-        return {"status": "blocked"}
-
-    from ingestion.connectors.reddit import RedditConnector
-    import asyncio
-
-    connector = RedditConnector()
-    if not connector.is_available():
-        return {"status": "skipped", "reason": "Reddit credentials not configured"}
-
-    keywords, countries, languages, skip = _resolve_collection_params(
-        search_topic_id, "reddit",
-        ["pharmacie", "médicament", "dafalgan", "paracetamol", "ibuprofen"],
-    )
-    if skip:
-        return {"status": "skipped", "reason": "source disabled for this topic"}
-    raw = asyncio.get_event_loop().run_until_complete(
-        connector.collect(keywords, countries, languages)
-    )
-    saved = _persist_mentions(raw, "reddit")
-    logger.info("collect_reddit_done", saved=saved)
-    return {"saved": saved}
 
 
 @shared_task(name="ingestion.tasks.collect_rss_news", bind=True, max_retries=3)

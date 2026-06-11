@@ -32,9 +32,20 @@ __pycache__/
 # Runtime / local scratch
 celerybeat-schedule
 summary
+logs/
 data/
 # SAM bulk export (large; regenerate via scripts, keep only derived brand_inn.json)
 data/sam/*.zip
 data/sam/*.xml
 data/farmaline/*.csv
 farmaline_*.zip
+
+# Data dumps, generated reports & screenshots at repo root (regenerate via scripts).
+# Root-anchored so legitimate frontend assets stay tracked.
+/*.xlsx
+/*.zip
+/*.pdf
+/*.docx
+/*.png
+/*.jpg
+/*.jpeg

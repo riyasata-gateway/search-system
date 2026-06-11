@@ -41,10 +41,8 @@ from ingestion.connectors.clinical_trials import ClinicalTrialsConnector
 from ingestion.connectors.doctissimo import DoctissimoConnector
 from ingestion.connectors.eudravigilance import EudraVigilanceConnector
 from ingestion.connectors.forum_scraper import ForumScraperConnector
-from ingestion.connectors.google_trends import GoogleTrendsConnector
 from ingestion.connectors.openfda import OpenFDAConnector
 from ingestion.connectors.pubmed import PubMedConnector
-from ingestion.connectors.reddit import RedditConnector
 from ingestion.connectors.rss_news import RSSNewsConnector
 from ingestion.connectors.safety_gate import SafetyGateConnector
 from ingestion.connectors.trustpilot import TrustpilotConnector
@@ -98,8 +96,6 @@ CONNECTORS = {
     "app_store": AppStoreReviewsConnector,
     "eudravigilance": EudraVigilanceConnector,
     "bcfi": BCFIConnector,
-    "google_trends": GoogleTrendsConnector,
-    "reddit": RedditConnector,
     "ansm": ANSMConnector,
     "doctissimo": DoctissimoConnector,
     "carenity": CarenityConnector,

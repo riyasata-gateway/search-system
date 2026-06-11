@@ -14,8 +14,6 @@ router = APIRouter()
 # source_type → Celery task name. Single source of truth for both the admin
 # trigger and the per-topic "Collect now" flow.
 TASK_MAP = {
-    "google_trends": "ingestion.tasks.collect_google_trends",
-    "reddit": "ingestion.tasks.collect_reddit",
     "rss": "ingestion.tasks.collect_rss_news",
     "forum": "ingestion.tasks.collect_forums",
     "youtube": "ingestion.tasks.collect_youtube",
