@@ -110,8 +110,16 @@ CONNECTORS = {
 }
 
 
+# Per-source fetch timeout — a single hanging feed (e.g. a slow RSS endpoint with
+# no socket timeout) must not stall the whole run. On timeout we skip that
+# brand×source and move on.
+_FETCH_TIMEOUT_S = 45
+
+
 async def _collect(conn, keywords):
-    return await conn.collect(keywords, COUNTRIES, LANGUAGES)
+    return await asyncio.wait_for(
+        conn.collect(keywords, COUNTRIES, LANGUAGES), timeout=_FETCH_TIMEOUT_S
+    )
 
 
 def main():

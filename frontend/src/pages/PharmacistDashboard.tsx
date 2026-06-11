@@ -5,6 +5,7 @@ import { TrendingUp, Package, AlertCircle, Download, CheckCircle, X, Search, Loa
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
 import FrameworkKpiSection from "../components/FrameworkKpiSection";
 import BrandPicker, { type PickerBrand } from "../components/BrandPicker";
+import ExportPdfButton from "../components/ExportPdfButton";
 import RoleBanner from "../components/RoleBanner";
 import { useAuth } from "../hooks/useAuth";
 
@@ -142,7 +143,7 @@ export default function PharmacistDashboard() {
   };
 
   return (
-    <div className="space-y-6">
+    <div id="pharmacist-export" className="space-y-6">
       <RoleBanner />
       <div className="flex items-center justify-between">
         <div>
@@ -150,6 +151,10 @@ export default function PharmacistDashboard() {
           <p className="text-sm text-gray-500">{dashboard?.country} · Pharmacist Intelligence</p>
         </div>
         <div className="flex gap-2">
+          <ExportPdfButton
+            targetId="pharmacist-export"
+            filename={`Pharmacist Dashboard — ${dashboard?.pharmacy_name ?? "pharmacy"}.pdf`}
+          />
           <button
             onClick={() => handleExport("csv")}
             className="flex items-center gap-1.5 text-sm px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"

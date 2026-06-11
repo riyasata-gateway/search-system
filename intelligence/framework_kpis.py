@@ -25,6 +25,39 @@ from sqlalchemy.orm import Session
 from models.brand import Brand
 from core.source_taxonomy import OPINION_SOURCE_TYPES
 
+import bisect
+
+MIN_TRUST_BASE = 10   # min classified opinions for a confident brand-trust index
+
+# Cached recommendation-density distribution across all review brands, so the
+# recommendation leg of brand-trust is a PERCENTILE RANK vs peers (a brand
+# recommended more than its peers scores high) rather than a tiny raw share that
+# can't move the index. Reviews are historical/static, so caching per-process is
+# safe; None until first computed.
+_REC_DENSITY_DIST = None
+
+
+def _rec_density_percentile(db: Session, my_density: float) -> float:
+    """Percentile rank (0–100) of a brand's recommendation density among all
+    review brands with a trust-eligible opinion base. 50 when no distribution."""
+    global _REC_DENSITY_DIST
+    if _REC_DENSITY_DIST is None:
+        rows = db.execute(text("""
+            SELECT sum((((mc.topic = 'recommendation') OR (mc.intent = 'recommendation')))::int)::float
+                     / nullif(count(mc.id), 0) AS dens
+            FROM mention_entities me
+            JOIN mentions m ON m.id = me.mention_id
+            JOIN mention_classifications mc ON mc.mention_id = m.id
+            WHERE me.entity_type = 'brand' AND m.source_type = ANY(:op)
+            GROUP BY me.entity_id
+            HAVING count(mc.id) >= :minb
+        """), {"op": list(OPINION_SOURCE_TYPES), "minb": MIN_TRUST_BASE}).fetchall()
+        _REC_DENSITY_DIST = sorted(float(r[0]) for r in rows if r[0] is not None)
+    dist = _REC_DENSITY_DIST
+    if not dist:
+        return 50.0
+    return 100.0 * bisect.bisect_right(dist, my_density) / len(dist)
+
 
 def _human(n: float) -> str:
     """13629 -> '13.6k'; 950 -> '950'."""
@@ -61,7 +94,9 @@ def compute_live_values(db: Session, brand: Brand) -> Dict[str, dict]:
                coalesce(avg(m.rating), 0)                      AS avg_rating,
                count(mc.id) FILTER (WHERE m.source_type = ANY(:op))  AS classified,
                sum((mc.sentiment = 'positive' AND m.source_type = ANY(:op))::int) AS pos,
-               sum((mc.sentiment = 'negative' AND m.source_type = ANY(:op))::int) AS neg
+               sum((mc.sentiment = 'negative' AND m.source_type = ANY(:op))::int) AS neg,
+               sum((((mc.topic = 'recommendation') OR (mc.intent = 'recommendation'))
+                    AND m.source_type = ANY(:op))::int) AS rec
         FROM mention_entities me
         JOIN mentions m ON m.id = me.mention_id
         LEFT JOIN mention_classifications mc ON mc.mention_id = m.id
@@ -363,6 +398,7 @@ def compute_live_values(db: Session, brand: Brand) -> Dict[str, dict]:
     classified = int(base["classified"] or 0)
     pos = int(base["pos"] or 0)
     neg = int(base["neg"] or 0)
+    rec = int(base["rec"] or 0)
 
     # Non-review public attention (news + social + forum) — the fallback signal
     # for Rx products that have no consumer-review footprint.
@@ -435,6 +471,29 @@ def compute_live_values(db: Session, brand: Brand) -> Dict[str, dict]:
                 "value": neg_pct, "display": f"{neg_pct}%",
                 "detail": f"{_human(comp_neg)} negative of {_human(comp_base)} {comp_lbl}",
                 "confidence": "ok"}
+
+    # ── B2: Pharmacist "brand trust" — recommendation-led perception index.
+    # 60% review positivity + 40% recommendation strength. Because reviews skew
+    # ~99% positive for nearly every brand (so sentiment alone barely separates
+    # brands), the recommendation leg is a PERCENTILE RANK of the brand's
+    # recommendation density vs peers — that's what differentiates trusted brands.
+    # Gated on a minimum opinion base so a handful of reviews can't fake an index.
+    if classified >= MIN_TRUST_BASE and polar >= MIN_POLAR:
+        pos_pct = 100.0 * pos / polar
+        rec_density = rec / classified
+        rec_rank = _rec_density_percentile(db, rec_density)
+        trust = round(0.6 * pos_pct + 0.4 * rec_rank)
+        out["ph_brand_trust"] = {
+            "value": trust, "display": f"{trust}/100",
+            "detail": (f"{round(pos_pct)}% positive · recommendation in the top "
+                       f"{max(1, round(100 - rec_rank))}% of brands "
+                       f"({_human(rec)} of {_human(classified)} opinions recommend)"),
+            "confidence": "ok"}
+    elif classified > 0:
+        out["ph_brand_trust"] = {
+            "value": None, "display": f"{_human(rec)} recommend of {_human(classified)}",
+            "detail": f"raw counts — only {classified} classified opinions, too few for a trust index",
+            "confidence": "low"}
 
     # ── Review momentum (last 90d vs prior 90d) — demand trend, marketing + BM ─
     mom = db.execute(text("""

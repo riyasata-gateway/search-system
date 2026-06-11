@@ -31,7 +31,7 @@ from datetime import date, timedelta
 from functools import lru_cache
 from typing import List, Optional
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, select, text
 from sqlalchemy.orm import Session
 
 from core.logging import get_logger
@@ -71,6 +71,8 @@ class BPIResult:
     # True when no component is measurable → the score is not meaningful and the
     # UI should show "Insufficient data" rather than the number.
     insufficient: bool = False
+    # B12 — points the action-acceptance flywheel moved the score by (±, bounded).
+    flywheel_delta: float = 0.0
 
     def to_bundle(self) -> MetricBundle:
         return MetricBundle(
@@ -94,6 +96,7 @@ class BPIResult:
                 "adoption_is_proxy": self.adoption_is_proxy,
                 "component_status": self.component_status or {},
                 "insufficient": self.insufficient,
+                "flywheel_delta": self.flywheel_delta,
             },
         )
 
@@ -101,6 +104,41 @@ class BPIResult:
 # Review/purchase sources: these drive ADOPTION (a review ≈ a purchase), so they
 # are excluded from AWARENESS (reach) to keep the two BPI components disjoint.
 _REVIEW_SOURCES = ("farmaline", "medimarket", "app_store")
+
+# B12 — flywheel→BPI. The maximum points the execution-feedback signal can move
+# the BPI by (in EITHER direction). Deliberately small: BPI must stay a measure
+# of the BRAND's market potential; how diligently the user accepts our actions is
+# only a minor nudge, never a driver. Needs a minimum of decisions to apply.
+_FLYWHEEL_MAX_ADJ = 5.0
+_FLYWHEEL_MIN_DECISIONS = 5
+_FLYWHEEL_POSITIVE = ("accepted", "acted_upon")
+_FLYWHEEL_NEGATIVE = ("skipped", "dismissed")
+
+
+def _flywheel_bpi_delta(db: Session, brand_name: str) -> tuple[float, dict]:
+    """Bounded BPI nudge from action-acceptance (the flywheel). Returns
+    (delta_points, info). delta = MAX·(accept_rate−0.5)·2 over the last 180d, so
+    all-accepted → +MAX, half → 0, all-rejected → −MAX. Neutral (0) below the
+    minimum-decisions floor or with no action history for the brand."""
+    if not brand_name:
+        return 0.0, {}
+    row = db.execute(text("""
+        SELECT sum((decision::text = ANY(:pos))::int) AS pos,
+               sum((decision::text = ANY(:neg))::int) AS neg
+        FROM action_events
+        WHERE context->>'brand_name' = :b
+          AND created_at >= now() - interval '180 days'
+    """), {"b": brand_name, "pos": list(_FLYWHEEL_POSITIVE),
+           "neg": list(_FLYWHEEL_NEGATIVE)}).mappings().first()
+    pos = int((row and row["pos"]) or 0)
+    neg = int((row and row["neg"]) or 0)
+    decided = pos + neg
+    if decided < _FLYWHEEL_MIN_DECISIONS:
+        return 0.0, {"applied": False, "decisions": decided}
+    rate = pos / decided
+    delta = round(_FLYWHEEL_MAX_ADJ * (rate - 0.5) * 2, 1)
+    return delta, {"applied": delta != 0.0, "acceptance_rate": round(rate, 3),
+                   "decisions": decided, "delta": delta}
 
 
 def _mentions_in_window(
@@ -498,10 +536,18 @@ def compute_bpi(
         db, "brand", brand_id, voice_since, country
     )
 
-    # Market fit: percentile of positive-voice volume vs peers — category resonance.
+    # Market fit: category RESONANCE = positivity SHARE (positive voice ÷ total
+    # voice) ranked vs peers — deliberately distinct from adoption, which ranks
+    # review VOLUME. Ranking positive *volume* here made market_fit a near-perfect
+    # duplicate of adoption (both volume-driven); ranking the positivity *rate*
+    # rewards a smaller brand that's loved and penalises a big lukewarm one.
     positive_voice = _positive_voice_bulk(db, peers, voice_since, country)
-    market_fit = _percentile_rank(positive_voice.get(brand_id, 0.0),
-                                  list(positive_voice.values()))
+    total_voice = _mentions_in_window(db, "brand", peers, voice_since, country)
+    fit_rates = {pid: positive_voice.get(pid, 0.0) / total_voice[pid]
+                 for pid in peers if total_voice.get(pid, 0) > 0}
+    my_fit_rate = fit_rates.get(brand_id)
+    market_fit = (_percentile_rank(my_fit_rate, list(fit_rates.values()))
+                  if my_fit_rate is not None else None)
 
     # ── Per-component honesty flags ──────────────────────────────────────────
     # A share rank is degenerate for a sole brand, and unrankable when <2 peers
@@ -514,7 +560,7 @@ def compute_bpi(
         return "no_signal" if raw <= 0 else "ok"   # genuine zero, not just lowest rank
 
     awareness_status = _share_status(awareness, my_awareness)
-    market_fit_status = _share_status(market_fit, positive_voice.get(brand_id, 0.0))
+    market_fit_status = _share_status(market_fit, positive_voice.get(brand_id, 0.0) if my_fit_rate is not None else 0.0)
     adoption_status = _share_status(adoption, my_adoption_raw)
     if adoption_status == "ok" and adoption_is_proxy:
         adoption_status = "proxy"
@@ -553,6 +599,15 @@ def compute_bpi(
     MIN_BPI_MENTIONS = 10
     insufficient = my_mentions < MIN_BPI_MENTIONS or len(measured) == 0
 
+    # ── B12: flywheel → BPI. Apply the bounded execution-feedback nudge ONLY to a
+    # real (sufficient) score — never invent a number for an insufficient brand.
+    flywheel_delta, flywheel_info = 0.0, {"applied": False}
+    if not insufficient:
+        flywheel_delta, flywheel_info = _flywheel_bpi_delta(db, brand.name)
+        if flywheel_delta:
+            bpi_score = clamp_score(bpi_score + flywheel_delta)
+    component_status["flywheel"] = flywheel_info
+
     # ── Confidence ───────────────────────────────────────────────────────────
     # High when we have mentions, an uptake signal, sentiment volume, and >1 peer.
     confidence_parts = [
@@ -583,6 +638,7 @@ def compute_bpi(
         sample_size=my_mentions,
         component_status=component_status,
         insufficient=insufficient,
+        flywheel_delta=flywheel_delta,
     )
 
 
@@ -602,3 +658,107 @@ def rank_bpi(
     out.sort(key=lambda r: r.bpi_score, reverse=True)
     logger.info("bpi_ranked", country=country, n=len(out))
     return out[:limit]
+
+
+def compute_competitive_map(
+    db: Session,
+    brand_id: int,
+    country: Optional[str] = None,
+    window_days: int = 90,
+    max_peers: int = 9,
+) -> Optional[dict]:
+    """B11 — Brand Competitive Map. Positions a brand against its competing-set
+    peers (ATC molecule peers for medicines, category family otherwise) on two
+    axes: market presence (awareness/reach percentile) × perception (sentiment).
+    Bubble = mention volume; the target brand is flagged is_self.
+
+    Bounded: peers are ranked by mention volume and only the top `max_peers`
+    (plus the target) get a full BPI computation, so the chart stays readable and
+    the call stays cheap even in a large category family.
+    """
+    brand = db.get(Brand, brand_id)
+    if brand is None:
+        return None
+    peer_ids = _category_peers(db, brand)
+    if not peer_ids:
+        peer_ids = [brand_id]
+
+    # Cheap volume ranking to pick the most-relevant competitors first.
+    counts = {
+        int(r[0]): int(r[1]) for r in db.execute(text("""
+            SELECT me.entity_id, count(*) FROM mention_entities me
+            JOIN mentions m ON m.id = me.mention_id
+            WHERE me.entity_type = 'brand' AND me.entity_id = ANY(:ids) AND m.is_deleted = false
+            GROUP BY me.entity_id
+        """), {"ids": peer_ids}).fetchall()
+    }
+    ranked = sorted(peer_ids, key=lambda p: counts.get(p, 0), reverse=True)
+    keep = ranked[:max_peers]
+    if brand_id not in keep:
+        keep.append(brand_id)
+
+    nodes = []
+    for pid in keep:
+        r = compute_bpi(db, pid, country=country, window_days=window_days)
+        if r is None:
+            continue
+        b = db.get(Brand, pid)
+        nodes.append({
+            "id": pid, "name": b.name if b else str(pid),
+            "bpi": None if r.insufficient else r.bpi_score,
+            "awareness": round(r.components.awareness * 100, 1),
+            "adoption": round(r.components.adoption * 100, 1),
+            "sentiment": round(r.components.sentiment * 100, 1),
+            "market_fit": round(r.components.market_fit * 100, 1),
+            "mentions": r.sample_size,
+            "is_self": pid == brand_id,
+            "insufficient": r.insufficient,
+        })
+    # Frame label for the UI: how the peer set was derived.
+    frame = "ATC molecule peers" if _atc_class_peers(db, brand) and len(_atc_class_peers(db, brand)) > 1 else "category peers"
+    return {"brand_id": brand_id, "brand": brand.name, "frame": frame,
+            "peer_count": len(peer_ids), "nodes": nodes}
+
+
+def compute_competitor_moves(
+    db: Session,
+    brand_id: int,
+    country: Optional[str] = None,
+    max_peers: int = 12,
+) -> Optional[dict]:
+    """B10 — competitor-movement detection. Runs the demand-momentum engine across
+    a brand's competing-set peers and surfaces those with a real, rising signal —
+    a competitor "making a move" (volume/velocity climbing) you'd want to pre-empt.
+    Bounded to the top peers by volume."""
+    from intelligence.momentum import compute_momentum
+    brand = db.get(Brand, brand_id)
+    if brand is None:
+        return None
+    peers = [p for p in _category_peers(db, brand) if p != brand_id]
+    counts = {
+        int(r[0]): int(r[1]) for r in db.execute(text("""
+            SELECT me.entity_id, count(*) FROM mention_entities me
+            JOIN mentions m ON m.id = me.mention_id
+            WHERE me.entity_type = 'brand' AND me.entity_id = ANY(:ids) AND m.is_deleted = false
+            GROUP BY me.entity_id
+        """), {"ids": peers}).fetchall()
+    } if peers else {}
+    ranked = sorted(peers, key=lambda p: counts.get(p, 0), reverse=True)[:max_peers]
+
+    moves = []
+    for pid in ranked:
+        mo = compute_momentum(db, "brand", pid, country=country)
+        if not (mo and mo.has_signal):
+            continue
+        b = db.get(Brand, pid)
+        vel = round(mo.velocity_pct, 1)
+        moves.append({
+            "name": b.name if b else str(pid),
+            "momentum": round(mo.momentum_score, 1),
+            "velocity": vel,
+            "current": mo.current_count,
+            # A "move" = momentum is materially rising, not just present.
+            "rising": mo.momentum_score >= 55 and vel > 0,
+        })
+    moves.sort(key=lambda m: m["momentum"], reverse=True)
+    return {"brand_id": brand_id, "brand": brand.name, "moves": moves}

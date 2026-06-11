@@ -25,7 +25,9 @@ from sqlalchemy.orm import Session
 from api.dependencies import get_current_user, require_lab
 from core.database import get_sync_db
 from intelligence.anomaly import scan_anomalies
-from intelligence.brand_potential_index import compute_bpi, rank_bpi
+from intelligence.brand_potential_index import (
+    compute_bpi, rank_bpi, compute_competitive_map, compute_competitor_moves,
+)
 from intelligence.campaign_pivot import suggest_pivots
 from intelligence.counseling_tips import generate_counseling_tips
 from intelligence.flywheel import acceptance_signals, log_action
@@ -206,6 +208,121 @@ async def counseling(
         "grounded_in": out.grounded_in,
         "model": out.model,
     }
+
+
+# ── Semantic insight (RAG) over the ingested corpus ─────────────────────────
+@router.get("/insight/{brand_id}")
+def evidence_insight(
+    brand_id: int,
+    q: Optional[str] = Query(None, description="Question; blank → default summary"),
+    lens: str = Query("evidence", description="evidence | voice | patient"),
+    db: Session = Depends(get_sync_db),
+    current_user: User = Depends(require_lab),
+):
+    """Grounded, cited insight from the ingested corpus via semantic retrieval +
+    LLM synthesis. `lens` selects the source set (evidence=PubMed,
+    voice=reviews, patient=forums)."""
+    from intelligence import evidence_rag as rag
+    sources = {"evidence": rag.EVIDENCE_SOURCES, "voice": rag.VOICE_SOURCES,
+               "patient": rag.PATIENT_SOURCES}.get(lens, rag.EVIDENCE_SOURCES)
+    return rag.answer(db, brand_id, query=q, source_types=sources)
+
+
+# ── B9 — Trending topics ────────────────────────────────────────────────────
+@router.get("/trending-topics/{brand_id}")
+def trending_topics(
+    brand_id: int,
+    db: Session = Depends(get_sync_db),
+    current_user: User = Depends(require_lab),
+):
+    """Topic mix for a brand with momentum: recent-window volume vs the prior
+    window per topic, so the UI can show a sized topic-cloud with rising/falling
+    direction. From the classified mention corpus."""
+    from sqlalchemy import text as _text
+    rows = db.execute(_text("""
+        SELECT mc.topic,
+               count(*) AS total,
+               count(*) FILTER (WHERE m.published_at >= now() - interval '90 days') AS recent,
+               count(*) FILTER (WHERE m.published_at >= now() - interval '180 days'
+                                  AND m.published_at <  now() - interval '90 days') AS prior
+        FROM mention_entities me
+        JOIN mentions m ON m.id = me.mention_id
+        JOIN mention_classifications mc ON mc.mention_id = m.id
+        WHERE me.entity_type = 'brand' AND me.entity_id = :bid
+          AND mc.topic IS NOT NULL AND mc.topic != 'general' AND m.is_deleted = false
+        GROUP BY mc.topic ORDER BY total DESC
+    """), {"bid": brand_id}).mappings().all()
+    topics = []
+    for r in rows:
+        recent, prior = int(r["recent"] or 0), int(r["prior"] or 0)
+        direction = "rising" if recent > prior else "falling" if recent < prior else "flat"
+        topics.append({"topic": r["topic"], "total": int(r["total"]),
+                       "recent": recent, "prior": prior, "direction": direction})
+    return {"brand_id": brand_id, "topics": topics}
+
+
+# ── B16 — Earned-media / press analysis lens ────────────────────────────────
+@router.get("/press-timeline/{brand_id}")
+def press_timeline(
+    brand_id: int,
+    db: Session = Depends(get_sync_db),
+    current_user: User = Depends(require_lab),
+):
+    """Press/news coverage for a brand: monthly article volume + sentiment split,
+    plus headline totals. Uses the (clean, brand-linked) rss/news mentions."""
+    from sqlalchemy import text as _text
+    rows = db.execute(_text("""
+        SELECT to_char(date_trunc('month', m.published_at), 'YYYY-MM') AS month,
+               count(*) AS articles,
+               sum((mc.sentiment = 'positive')::int) AS positive,
+               sum((mc.sentiment = 'negative')::int) AS negative,
+               sum((mc.sentiment = 'neutral')::int)  AS neutral
+        FROM mention_entities me
+        JOIN mentions m ON m.id = me.mention_id
+        LEFT JOIN mention_classifications mc ON mc.mention_id = m.id
+        WHERE me.entity_type = 'brand' AND me.entity_id = :bid
+          AND m.source_type IN ('rss', 'news') AND m.is_deleted = false
+          AND m.published_at IS NOT NULL
+        GROUP BY 1 ORDER BY 1
+    """), {"bid": brand_id}).mappings().all()
+    timeline = [{"month": r["month"], "articles": int(r["articles"]),
+                 "positive": int(r["positive"] or 0), "negative": int(r["negative"] or 0),
+                 "neutral": int(r["neutral"] or 0)} for r in rows]
+    total = sum(t["articles"] for t in timeline)
+    pos = sum(t["positive"] for t in timeline)
+    neg = sum(t["negative"] for t in timeline)
+    polar = pos + neg
+    return {"brand_id": brand_id, "total_articles": total,
+            "pos_pct": round(100 * pos / polar) if polar else None,
+            "timeline": timeline}
+
+
+# ── B11 — Brand Competitive Map ─────────────────────────────────────────────
+@router.get("/competitive-map/{brand_id}")
+def competitive_map(
+    brand_id: int,
+    country: Optional[str] = Query(None, max_length=2),
+    db: Session = Depends(get_sync_db),
+    current_user: User = Depends(require_lab),
+):
+    result = compute_competitive_map(db, brand_id, country=country)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Brand not found")
+    return result
+
+
+# ── B10 — Competitor-movement detection ─────────────────────────────────────
+@router.get("/competitor-moves/{brand_id}")
+def competitor_moves(
+    brand_id: int,
+    country: Optional[str] = Query(None, max_length=2),
+    db: Session = Depends(get_sync_db),
+    current_user: User = Depends(require_lab),
+):
+    result = compute_competitor_moves(db, brand_id, country=country)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Brand not found")
+    return result
 
 
 # ── Phase 2 — Brand-side prescriptive layer ─────────────────────────────────

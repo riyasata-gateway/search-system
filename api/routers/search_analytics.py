@@ -449,6 +449,16 @@ class LangSentiment(BaseModel):
     negative: int
 
 
+class TopicSentiment(BaseModel):
+    """B1 — sentiment split for one topic/category (efficacy, price, …)."""
+    topic: str
+    positive: int
+    neutral: int
+    negative: int
+    total: int
+    pos_pct: Optional[float]   # % positive over polar base; None if no polar
+
+
 class ReviewAnalytics(BaseModel):
     scope: str
     scope_label: str
@@ -463,6 +473,7 @@ class ReviewAnalytics(BaseModel):
     languages: List[Slice]
     brands: List[BrandRow]
     topics: List[Slice]
+    topic_sentiment: List[TopicSentiment]   # B1 — sentiment split by category
     products: List[ProductRow]        # worst-sentiment products (pharmacist)
     triage: List[TriageItem]          # low-rated recent reviews (pharmacist)
     lang_sentiment: List[LangSentiment]
@@ -475,10 +486,10 @@ class ReviewAnalytics(BaseModel):
 # Which blocks each persona sees, in order. Everyone gets the headline KPIs +
 # sentiment; the rest is the role lens.
 _ROLE_SECTIONS: Dict[str, List[str]] = {
-    "pharmacist":    ["sentiment", "triage", "products", "topics", "timeline"],
-    "marketing":     ["sentiment", "timeline", "brands", "topics", "lang_sentiment"],
-    "brand_manager": ["sentiment", "brands", "timeline", "topics"],
-    "admin":         ["sentiment", "timeline", "sources", "brands", "topics", "products", "lang_sentiment"],
+    "pharmacist":    ["sentiment", "triage", "products", "topic_sentiment", "topics", "timeline"],
+    "marketing":     ["sentiment", "timeline", "topic_sentiment", "brands", "topics", "lang_sentiment"],
+    "brand_manager": ["sentiment", "brands", "topic_sentiment", "timeline", "topics"],
+    "admin":         ["sentiment", "timeline", "topic_sentiment", "sources", "brands", "topics", "products", "lang_sentiment"],
 }
 
 
@@ -613,6 +624,33 @@ async def review_analytics(
     )).all()
     topics = [Slice(label=(t.value if hasattr(t, "value") else str(t)), count=int(c)) for t, c in topic_rows]
 
+    ts_rows = (await db.execute(
+        select(MentionClassification.topic,
+               pos_c.label("pos"), neu_c.label("neu"), neg_c.label("neg"))
+        # Explicit FROM: none of the selected columns reference Mention, so the
+        # left side must be set so the join resolves.
+        .select_from(Mention)
+        .join(MentionClassification, MentionClassification.mention_id == Mention.id)
+        .where(*base_conds, MentionClassification.topic.isnot(None))
+        .group_by(MentionClassification.topic)
+    )).all()
+    topic_sentiment = []
+    for t, p, n, ng in ts_rows:
+        p, n, ng = int(p or 0), int(n or 0), int(ng or 0)
+        total = p + n + ng
+        if not total:
+            continue
+        polar = p + ng
+        topic_sentiment.append(TopicSentiment(
+            topic=(t.value if hasattr(t, "value") else str(t)),
+            positive=p, neutral=n, negative=ng, total=total,
+            # % positive over the polarised base (neutrals excluded), None when
+            # there's no polar opinion to derive a percentage from.
+            pos_pct=round(100.0 * p / polar, 1) if polar else None,
+        ))
+    # Lead with the themes that have the most opinion (most actionable).
+    topic_sentiment.sort(key=lambda x: x.total, reverse=True)
+
     # ── product ratings grid — most-reviewed products (min 3), sorted client-side
     prod_rows = (await db.execute(
         select(
@@ -736,6 +774,7 @@ async def review_analytics(
         languages=languages,
         brands=brands,
         topics=topics,
+        topic_sentiment=topic_sentiment,
         products=products,
         triage=triage,
         lang_sentiment=lang_sentiment,

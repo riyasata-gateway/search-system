@@ -38,6 +38,7 @@ interface Props {
   bpi: number | null;
   bpiInsufficient: boolean;
   bpiConfidence?: number | null;   // 0–1; surfaced as a confidence badge
+  bpiFlywheel?: number | null;     // ± points the action-acceptance flywheel moved BPI
   launchVerdict?: string;
   launchScore: number | null;
   launchInsufficient: boolean;
@@ -125,6 +126,11 @@ export default function RoleHero(p: Props) {
           composite · awareness × adoption × sentiment × fit
           {!p.bpiInsufficient && p.bpiConfidence != null && (
             <span className="ml-1.5 font-semibold text-white/90">· {Math.round(p.bpiConfidence * 100)}% confidence</span>
+          )}
+          {!p.bpiInsufficient && !!p.bpiFlywheel && (
+            <span className="ml-1.5 font-semibold text-white/90" title="Adjustment from how your team accepts this brand's recommended actions (capped ±5)">
+              · flywheel {p.bpiFlywheel > 0 ? "+" : ""}{p.bpiFlywheel}
+            </span>
           )}
         </p>
       </div>

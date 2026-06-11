@@ -12,6 +12,12 @@ import { apiClient } from "../api/client";
 import InfoTip from "../components/InfoTip";
 import BrandPicker from "../components/BrandPicker";
 import { useSelectedBrand } from "../lib/selectedBrand";
+import CompetitiveMap from "../components/CompetitiveMap";
+import PressLens from "../components/PressLens";
+import CompetitorMoves from "../components/CompetitorMoves";
+import TrendingTopics from "../components/TrendingTopics";
+import ExportPdfButton from "../components/ExportPdfButton";
+import InsightPanel from "../components/InsightPanel";
 import { define } from "../lib/glossary";
 
 // ── types ────────────────────────────────────────────────────────────────────
@@ -225,7 +231,7 @@ export default function BrandPotential() {
   };
 
   return (
-    <div className="space-y-6 max-w-7xl animate-fade-up">
+    <div id="brandpotential-export" className="space-y-6 max-w-7xl animate-fade-up">
       {/* Header — no `overflow-hidden` here: it would clip the BrandPicker dropdown.
           The gradient overlay is rounded to match instead of relying on the clip.
           `z-30` lifts the whole header (and its dropdown) above the cards below,
@@ -244,12 +250,16 @@ export default function BrandPotential() {
             </p>
           </div>
 
-          {/* Brand selector */}
-          <div className="flex flex-wrap gap-2">
+          {/* Brand selector + export */}
+          <div className="flex flex-wrap items-center gap-2">
             <BrandPicker
               value={brandId}
               selectedBrand={selectedBrand}
               onSelect={(b) => setSelectedBrand(b)}
+            />
+            <ExportPdfButton
+              targetId="brandpotential-export"
+              filename={`Brand Potential — ${selectedBrand?.name ?? "brand"}.pdf`}
             />
           </div>
         </div>
@@ -375,6 +385,10 @@ export default function BrandPotential() {
             )}
           </SectionCard>
 
+          {/* C-bucket — semantic insight (RAG). Shown for all brands: catalog
+              medicines still have an evidence lens even with no consumer channel. */}
+          <InsightPanel brandId={brandId} />
+
           {/* Lifecycle + Key message tuning — consumer-signal panels, hidden for
               supplier/catalogue brands that have no consumer channel. */}
           {!noConsumer && (
@@ -484,6 +498,14 @@ export default function BrandPotential() {
               </ul>
             )}
           </SectionCard>
+
+          {/* B11 map + B10 competitor moves + B9 trending + B16 press */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <CompetitiveMap brandId={brandId} />
+            <CompetitorMoves brandId={brandId} />
+            <TrendingTopics brandId={brandId} />
+            <PressLens brandId={brandId} />
+          </div>
           </>
           )}
 
@@ -520,24 +542,24 @@ export default function BrandPotential() {
                       <p className="text-sm font-semibold text-slate-900">{t.name}</p>
                       <p className="text-xs text-slate-500">{t.specialty} · {t.region}</p>
                     </div>
-                    <span className="text-xs font-semibold text-sky-700 bg-sky-50 px-2.5 py-1 rounded-full border border-sky-200">
+                    <span className="text-xs font-semibold text-sky-300 bg-sky-500/15 px-2.5 py-1 rounded-full border border-sky-400/30">
                       momentum {t.prescriber_momentum.toFixed(0)}
                     </span>
                   </li>
                 ))}
               </ul>
             ) : hcpTarget?.target ? (
-              <div className="rounded-xl border border-sky-200 bg-sky-50/60 p-4">
-                <p className="text-sm text-slate-800">
-                  Target group: <span className="font-semibold text-sky-700">{hcpTarget.target.specialty}</span>
+              <div className="rounded-xl border border-sky-400/30 bg-sky-500/[0.08] p-4">
+                <p className="text-sm text-slate-200">
+                  Target group: <span className="font-semibold text-sky-300">{hcpTarget.target.specialty}</span>
                 </p>
-                <p className="text-xs text-slate-600 mt-1">
+                <p className="text-xs text-slate-300 mt-1">
                   Derived from the brand's active substance{hcpTarget.target.substance ? ` (${hcpTarget.target.substance})` : ""} —
                   ATC <span className="font-mono">{hcpTarget.target.atc}</span>
                   {hcpTarget.target.atc_desc ? ` · ${hcpTarget.target.atc_desc}` : ""}, from the Belgian SAM register.
                 </p>
-                <p className="text-[11px] text-slate-500 mt-2">
-                  Connect <span className="text-slate-700">{hcpTarget.register}</span> to pull the named prescriber list for this specialty.
+                <p className="text-[11px] text-slate-400 mt-2">
+                  Connect <span className="text-slate-200">{hcpTarget.register}</span> to pull the named prescriber list for this specialty.
                 </p>
               </div>
             ) : (

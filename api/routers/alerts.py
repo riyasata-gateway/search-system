@@ -7,9 +7,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.dependencies import get_current_user, write_audit_log
-from core.database import get_db
-from models.alert import Alert, AlertSeverity, AlertType
+from core.database import get_db, get_sync_db
+from models.alert import Alert, AlertRule, AlertSeverity, AlertType, RuleMetric, RuleOperator
 from models.user import User, UserRole
+from sqlalchemy.orm import Session as SyncSession
 
 router = APIRouter()
 
@@ -18,14 +19,15 @@ router = APIRouter()
 # Pharmacist owns patient-safety & supply; marketing & brand owners share the
 # reputation / market-signal types. Keep this in sync with core/role_lens intent.
 _ROLE_ALERT_TYPES = {
-    UserRole.pharmacist: {AlertType.adverse_event, AlertType.shortage},
+    # threshold_rule = the user's own saved-rule (B7) breaches — every role sees its own.
+    UserRole.pharmacist: {AlertType.adverse_event, AlertType.shortage, AlertType.threshold_rule},
     UserRole.marketing: {
         AlertType.misinformation, AlertType.prescription_promotion,
-        AlertType.competitor_spike, AlertType.brand_spike,
+        AlertType.competitor_spike, AlertType.brand_spike, AlertType.threshold_rule,
     },
     UserRole.brand_manager: {
         AlertType.shortage, AlertType.misinformation, AlertType.prescription_promotion,
-        AlertType.competitor_spike, AlertType.brand_spike,
+        AlertType.competitor_spike, AlertType.brand_spike, AlertType.threshold_rule,
     },
 }
 
@@ -164,3 +166,99 @@ async def acknowledge_alert(
     out.description = _clean_description(alert)
     out.count = acked
     return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# B7 — user-defined saved alert rules (in-app; Slack/Teams/email delivery = B8).
+# Sync endpoints (the rule metrics reuse the sync intelligence engines).
+# ─────────────────────────────────────────────────────────────────────────────
+
+class AlertRuleIn(BaseModel):
+    name: str
+    metric: RuleMetric
+    operator: RuleOperator
+    threshold: float
+    brand_id: Optional[int] = None      # null → evaluate across framework brands
+    severity: AlertSeverity = AlertSeverity.medium
+    active: bool = True
+
+
+class AlertRuleOut(BaseModel):
+    id: int
+    name: str
+    metric: RuleMetric
+    operator: RuleOperator
+    threshold: float
+    brand_id: Optional[int]
+    severity: AlertSeverity
+    active: bool
+    created_at: datetime
+    last_evaluated_at: Optional[datetime]
+    last_triggered_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
+def _framework_brand_ids_sync(db: SyncSession) -> List[int]:
+    from models.brand import Brand
+    return list(db.execute(select(Brand.id).where(Brand.category.isnot(None))).scalars().all())
+
+
+@router.get("/rules", response_model=List[AlertRuleOut])
+def list_rules(db: SyncSession = Depends(get_sync_db), current_user: User = Depends(get_current_user)):
+    """The current user's saved alert rules."""
+    rows = db.execute(
+        select(AlertRule).where(AlertRule.owner_id == current_user.id).order_by(AlertRule.created_at.desc())
+    ).scalars().all()
+    return [AlertRuleOut.model_validate(r) for r in rows]
+
+
+@router.post("/rules", response_model=AlertRuleOut, status_code=status.HTTP_201_CREATED)
+def create_rule(body: AlertRuleIn, db: SyncSession = Depends(get_sync_db),
+                current_user: User = Depends(get_current_user)):
+    rule = AlertRule(
+        owner_id=current_user.id, name=body.name.strip()[:120], metric=body.metric,
+        operator=body.operator, threshold=float(body.threshold), brand_id=body.brand_id,
+        severity=body.severity, active=body.active, created_at=datetime.now(timezone.utc),
+    )
+    db.add(rule)
+    db.commit()
+    db.refresh(rule)
+    return AlertRuleOut.model_validate(rule)
+
+
+@router.put("/rules/{rule_id}", response_model=AlertRuleOut)
+def update_rule(rule_id: int, body: AlertRuleIn, db: SyncSession = Depends(get_sync_db),
+                current_user: User = Depends(get_current_user)):
+    rule = db.get(AlertRule, rule_id)
+    if rule is None or rule.owner_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    rule.name = body.name.strip()[:120]
+    rule.metric = body.metric
+    rule.operator = body.operator
+    rule.threshold = float(body.threshold)
+    rule.brand_id = body.brand_id
+    rule.severity = body.severity
+    rule.active = body.active
+    db.commit()
+    db.refresh(rule)
+    return AlertRuleOut.model_validate(rule)
+
+
+@router.delete("/rules/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_rule(rule_id: int, db: SyncSession = Depends(get_sync_db),
+                current_user: User = Depends(get_current_user)):
+    rule = db.get(AlertRule, rule_id)
+    if rule is None or rule.owner_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    db.delete(rule)
+    db.commit()
+
+
+@router.post("/rules/evaluate")
+def evaluate_rules(db: SyncSession = Depends(get_sync_db), current_user: User = Depends(get_current_user)):
+    """Evaluate the user's active rules now; create in-app alerts on breach."""
+    from intelligence.alert_rules import evaluate_rules_for_owner
+    n = evaluate_rules_for_owner(db, current_user.id, _framework_brand_ids_sync(db))
+    return {"new_alerts": n}

@@ -38,8 +38,9 @@ class Intent(str, enum.Enum):
     complaint = "complaint"
     question = "question"
     purchase_intent = "purchase_intent"
-    comparison = "comparison"
+    comparison = "comparison"          # incl. "A vs B" molecule/brand comparisons
     recommendation = "recommendation"
+    reimbursement = "reimbursement"    # B3 — reimbursement / RIZIV / molecule-cost queries
     other = "other"
 
 

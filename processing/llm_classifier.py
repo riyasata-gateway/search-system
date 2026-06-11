@@ -37,7 +37,7 @@ _TOPICS = {
 }
 _INTENTS = {
     "complaint", "question", "purchase_intent",
-    "comparison", "recommendation", "other",
+    "comparison", "recommendation", "reimbursement", "other",
 }
 
 _SYSTEM_PROMPT = """You are a multilingual pharmaceutical mention classifier for PharmaWatch (EU pharma intelligence, Belgium + France).
@@ -47,7 +47,7 @@ Given a single mention text (in French / Dutch / German / English), return STRIC
 {
   "sentiment": "positive | neutral | negative",
   "topic":     "price | efficacy | side_effect | availability | packaging | recommendation | general",
-  "intent":    "complaint | question | purchase_intent | comparison | recommendation | other",
+  "intent":    "complaint | question | purchase_intent | comparison | recommendation | reimbursement | other",
   "is_adverse_event_signal": true | false,
   "confidence": 0.0-1.0
 }
@@ -56,6 +56,8 @@ Rules:
 - `sentiment` is the OVERALL emotional tone of the writer toward the drug/brand.
 - `topic` is what the mention is ABOUT. Pick the single best match.
 - `intent` is what the WRITER is doing. Pick the single best match.
+  • Use `comparison` for "A vs B" — weighing one brand/molecule against another.
+  • Use `reimbursement` when the writer is asking about cost coverage / RIZIV-INAMI / mutuelle / terugbetaling reimbursement, or whether a molecule/brand is reimbursed.
 - `is_adverse_event_signal` = true ONLY if the text describes a personal/patient adverse reaction, side effect after taking the drug, allergic reaction, hospitalisation, or symptom-after-use. NEWS about adverse events in general is FALSE. Be conservative — false negatives are worse than false positives in pharmacovigilance.
 - `confidence` is your own self-assessed certainty across the four labels above.
 

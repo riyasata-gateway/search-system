@@ -14,6 +14,7 @@ import { useAuth } from "../hooks/useAuth";
 import FrameworkKpiSection from "../components/FrameworkKpiSection";
 import BrandPicker from "../components/BrandPicker";
 import { useSelectedBrand } from "../lib/selectedBrand";
+import ExportPdfButton from "../components/ExportPdfButton";
 import RoleBanner from "../components/RoleBanner";
 import RoleHero from "../components/RoleHero";
 import InfoTip from "../components/InfoTip";
@@ -198,7 +199,7 @@ export default function BrandPulse() {
     : { framework: 1, competitor: 2, exec: 3, charts: 4, cta: 5 };
 
   return (
-    <div className="flex flex-col gap-6">
+    <div id="brandpulse-export" className="flex flex-col gap-6">
       <RoleBanner />
       {/* Header: role-framed title + brand switcher + (admin) view toggle */}
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -235,6 +236,10 @@ export default function BrandPulse() {
             selectedBrand={activeBrand}
             onSelect={(b) => setActiveBrand(b)}
           />
+          <ExportPdfButton
+            targetId="brandpulse-export"
+            filename={`Brand Pulse — ${activeBrand?.name ?? "brand"}.pdf`}
+          />
         </div>
       </div>
 
@@ -256,6 +261,7 @@ export default function BrandPulse() {
         bpi={bpiHead?.value ?? null}
         bpiInsufficient={bpiInsufficient}
         bpiConfidence={bpiHead?.confidence ?? null}
+        bpiFlywheel={bpi?.context?.flywheel_delta ?? 0}
         launchVerdict={launchVerdict}
         launchScore={launchHead?.value ?? null}
         launchInsufficient={launchInsufficient}

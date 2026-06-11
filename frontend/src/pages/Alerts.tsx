@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "../api/client";
-import { Bell, CheckCircle, AlertTriangle, Shield, TrendingUp, Info } from "lucide-react";
+import { Bell, CheckCircle, AlertTriangle, Shield, TrendingUp, Info, SlidersHorizontal } from "lucide-react";
+import AlertRules from "../components/AlertRules";
 
 // Dark-theme-native severity styles. We use translucent colour washes + light
 // text (arbitrary /opacity utilities) rather than Tailwind's light *-50/*-800
@@ -20,6 +21,7 @@ const TYPE_ICONS: Record<string, React.ReactNode> = {
   competitor_spike: <TrendingUp size={16} className="text-blue-500" />,
   brand_spike: <TrendingUp size={16} className="text-green-500" />,
   prescription_promotion: <Shield size={16} className="text-purple-500" />,
+  threshold_rule: <SlidersHorizontal size={16} className="text-indigo-500" />,
 };
 
 export default function Alerts() {
@@ -51,6 +53,8 @@ export default function Alerts() {
           </span>
         )}
       </div>
+
+      <AlertRules />
 
       {unacknowledged.length === 0 && acknowledged.length === 0 && (
         <div className="bg-white rounded-xl border border-gray-200 py-12 text-center">

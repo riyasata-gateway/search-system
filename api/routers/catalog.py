@@ -300,7 +300,7 @@ def brand_kpis(
         "mk_search_momentum", "mk_pivot_alert", "bm_review_momentum",
         "bm_voice_share", "mk_share_of_voice", "bm_regional_split",
         "ph_patient_sentiment", "ph_complaint_rate", "ph_demand_signal",
-        "ph_patient_questions", "bm_launch_readiness",
+        "ph_patient_questions", "bm_launch_readiness", "ph_brand_trust",
     }
 
     kpis = []

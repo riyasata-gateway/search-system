@@ -8,6 +8,7 @@ import {
 } from "recharts";
 import { apiClient } from "../api/client";
 import { useI18n } from "../i18n";
+import { useAuth } from "../hooks/useAuth";
 import {
   Search as SearchIcon, AlertTriangle, ExternalLink, Filter,
   Loader2, Globe, Rss, Clock, Sparkles,
@@ -854,10 +855,18 @@ function SourceNoticesBanner({ notices }: { notices: SourceNotice[] }) {
 function RiskCallout({ results, query }: { results: LiveResult[]; query: string }) {
   const { t } = useI18n();
   const navigate = useNavigate();
+  const { user } = useAuth();
   const count = results.length;
+  // The AE review queue is pharmacist/admin-only. For other roles, escalation
+  // still flags the mentions for pharmacovigilance — but routing them to the
+  // queue would hit the role guard and bounce them to their home (Brand Pulse),
+  // which read as a broken redirect. So only reviewers navigate; everyone else
+  // gets an inline "flagged" confirmation.
+  const canReview = user?.role === "pharmacist" || user?.role === "admin";
+  const [flagged, setFlagged] = useState(false);
 
   // Live Search is no-write; an explicit human escalation persists the flagged
-  // results into the pharmacovigilance review queue, then routes there.
+  // results into the pharmacovigilance review queue.
   const escalate = useMutation({
     mutationFn: () =>
       apiClient
@@ -875,7 +884,7 @@ function RiskCallout({ results, query }: { results: LiveResult[]; query: string 
           })),
         })
         .then((r) => r.data),
-    onSuccess: () => navigate("/adverse-events"),
+    onSuccess: () => (canReview ? navigate("/adverse-events") : setFlagged(true)),
   });
 
   if (count <= 0) return null;
@@ -895,14 +904,20 @@ function RiskCallout({ results, query }: { results: LiveResult[]; query: string 
           <p className="text-xs text-red-600 mt-1 font-medium">{t("risk.escalateError")}</p>
         )}
       </div>
-      <button
-        onClick={() => escalate.mutate()}
-        disabled={escalate.isPending}
-        className="shrink-0 inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-gradient-to-br from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 rounded-lg shadow-soft transition-all disabled:opacity-60"
-      >
-        {escalate.isPending ? <Loader2 size={13} className="animate-spin" /> : null}
-        {escalate.isPending ? t("risk.escalating") : t("risk.cta")}
-      </button>
+      {flagged ? (
+        <span className="shrink-0 inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-emerald-700 bg-emerald-100 border border-emerald-300 rounded-lg">
+          ✓ Flagged for the pharmacovigilance team
+        </span>
+      ) : (
+        <button
+          onClick={() => escalate.mutate()}
+          disabled={escalate.isPending}
+          className="shrink-0 inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-gradient-to-br from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 rounded-lg shadow-soft transition-all disabled:opacity-60"
+        >
+          {escalate.isPending ? <Loader2 size={13} className="animate-spin" /> : null}
+          {escalate.isPending ? t("risk.escalating") : canReview ? t("risk.cta") : "Flag for review"}
+        </button>
+      )}
     </div>
   );
 }
